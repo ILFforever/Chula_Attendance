@@ -656,6 +656,10 @@ async def on_ready():
     for guild in bot.guilds:
         tree.copy_global_to(guild=guild)
         await tree.sync(guild=guild)  # guild sync (instant)
+    await bot.change_presence(activity=discord.Activity(
+        type=discord.ActivityType.watching,
+        name="for attendance links | github.com/ILFforever/Chula_Attendance",
+    ))
     log.info("Bot is online as %s (ID: %s)", bot.user, bot.user.id)
     log.info("Slash commands synced")
     log.info("Monitoring channels: %s", monitored_channels or "(none)")
