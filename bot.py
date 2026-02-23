@@ -407,10 +407,13 @@ class AttendanceLogger:
         finally:
             log.info("Check-in END: %s", name)
 
-    def check_in_all(self, attendance_url: str) -> list[str]:
-        """Check in every registered user for a given attendance URL."""
+    def check_in_all(self, attendance_url: str) -> list[tuple[str, str]]:
+        """Check in every registered user for a given attendance URL.
+
+        Returns a list of (discord_user_id, result_message) tuples.
+        """
         if not registered_users:
-            return ["No users registered. Use `/register` to add users."]
+            return [("", "No users registered. Use `/register` to add users.")]
 
         results = []
         for uid, info in registered_users.items():
@@ -422,12 +425,12 @@ class AttendanceLogger:
                 password = decrypt_password(encrypted_password)
             except ValueError as e:
                 log.error("Failed to decrypt password for %s: %s", info["username"], e)
-                results.append(f"❌ **{display_name}** — failed to decrypt password (may need to re-register)")
+                results.append((uid, f"❌ **{display_name}** — failed to decrypt password (may need to re-register)"))
                 continue
 
             login_method = info.get("login_method", "cu_net")
             result = self.check_in(attendance_url, info["username"], password, display_name, login_method=login_method)
-            results.append(result)
+            results.append((uid, result))
         return results
 
     def cleanup(self):
@@ -660,7 +663,8 @@ async def cmd_checkin(interaction: discord.Interaction, url: str):
         f"⏳ Checking in {len(registered_users)} user(s) …"
     )
     results = await run_check_in_async(url)
-    await interaction.followup.send("\n".join(results))
+    await interaction.followup.send("\n".join(r for _, r in results))
+    await dm_results(results)
 
 
 @tree.command(name="status", description="Show bot uptime and status")
@@ -700,10 +704,22 @@ async def on_ready():
     log.info("Registered users: %d", len(registered_users))
 
 
-async def run_check_in_async(attendance_url: str) -> list[str]:
+async def run_check_in_async(attendance_url: str) -> list[tuple[str, str]]:
     """Run blocking Selenium operations in a thread pool to avoid blocking the event loop."""
     loop = bot.loop
     return await loop.run_in_executor(executor, attendance.check_in_all, attendance_url)
+
+
+async def dm_results(results: list[tuple[str, str]]):
+    """Send each user a DM with their own check-in result."""
+    for uid, result in results:
+        if not uid:
+            continue
+        try:
+            user = await bot.fetch_user(int(uid))
+            await user.send(f"📋 **Attendance result:**\n{result}")
+        except Exception as e:
+            log.warning("Could not DM user %s: %s", uid, e)
 
 
 @bot.event
@@ -730,7 +746,8 @@ async def on_message(message: discord.Message):
             f"⏳ Attendance link detected! Checking in {len(registered_users)} user(s) …"
         )
         results = await run_check_in_async(attendance_url)
-        await status_msg.edit(content="\n".join(results))
+        await status_msg.edit(content="\n".join(r for _, r in results))
+        await dm_results(results)
 
         # Swap the hourglass for a checkmark on the original message
         await message.remove_reaction("⏳", bot.user)
