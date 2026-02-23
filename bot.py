@@ -263,6 +263,14 @@ class AttendanceLogger:
                 log.error("TIMEOUT waiting for username field! URL: %s", self.driver.current_url)
                 continue
 
+            # For platform login, select the correct radio button (email vs username)
+            if login_method == "platform":
+                is_email = re.search(r"@", username)
+                if is_email:
+                    self.driver.find_element(By.ID, "loginfield_email").click()
+                else:
+                    self.driver.find_element(By.ID, "loginfield_name").click()
+
             username_field.clear()
             username_field.send_keys(username)
 
@@ -459,8 +467,8 @@ executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="selenium_")
 # Slash Commands — User Management
 # ---------------------------------------------------------------------------
 class LoginMethod(enum.Enum):
-    cu_net = "cu_net"
-    platform = "platform"
+    CU_Net = "cu_net"
+    MyCourseVille = "platform"
 
 
 @tree.command(name="register", description="Register your MyCourseVille credentials")
@@ -475,7 +483,7 @@ async def cmd_register(
     username: str,
     password: str,
 ):
-    if login_method == LoginMethod.cu_net:
+    if login_method == LoginMethod.CU_Net:
         if not re.fullmatch(r"\d{10}", username):
             await interaction.response.send_message(
                 "❌ Username must be exactly 10 digits (e.g. `6799999999`).",
@@ -503,7 +511,7 @@ async def cmd_register(
         "login_method": login_method.value,
     }
     _persist_users()
-    method_label = "CU Net" if login_method == LoginMethod.cu_net else "MyCourseVille platform"
+    method_label = "CU Net" if login_method == LoginMethod.CU_Net else "MyCourseVille platform"
     log.info("User registered: %s (%s) via %s", interaction.user.display_name, username, method_label)
     await interaction.response.send_message(
         f"✅ Registered **{interaction.user.display_name}** with username `{username}` "
