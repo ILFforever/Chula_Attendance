@@ -1,0 +1,13 @@
+app = "attendance-bot-changeme"
+primary_region = "sin"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PYTHONUNBUFFERED = "1"
+
+[vm]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 256
