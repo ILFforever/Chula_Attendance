@@ -1,3 +1,4 @@
+import enum
 import os
 import re
 import json
@@ -221,23 +222,29 @@ class AttendanceLogger:
         except NoSuchElementException:
             return False
 
-    def login(self, username: str, password: str, max_attempts: int = 3):
-        """Log into MyCourseVille via Chula SSO with verification."""
+    def login(self, username: str, password: str, login_method: str = "cu_net", max_attempts: int = 3):
+        """Log into MyCourseVille via Chula SSO or platform account."""
         for attempt in range(1, max_attempts + 1):
-            log.info("Login attempt %d/%d for %s …", attempt, max_attempts, username)
+            log.info("Login attempt %d/%d for %s (method=%s) …", attempt, max_attempts, username, login_method)
 
-            # Follow the same flow as clicking "Log in with CU account" button
             # First visit main page to establish proper Referer header
             self.driver.get("https://www.mycourseville.com/")
-            WebDriverWait(self.driver, 10).until(
-                EC.presence_of_element_located((By.ID, "courseville-login-w-platform-cu-button"))
-            )
 
-            # Find the "Log in with CU account" button by its ID and get its OAuth URL
-            login_button = self.driver.find_element(By.ID, "courseville-login-w-platform-cu-button")
-            oauth_url = login_button.get_attribute("href")
+            if login_method == "platform":
+                # Click "Log in with MyCourseVille platform account" button
+                WebDriverWait(self.driver, 10).until(
+                    EC.presence_of_element_located((By.ID, "courseville-login-w-platform-button"))
+                )
+                login_btn = self.driver.find_element(By.ID, "courseville-login-w-platform-button")
+            else:
+                # Click "Log in with CU account" button
+                WebDriverWait(self.driver, 10).until(
+                    EC.presence_of_element_located((By.ID, "courseville-login-w-platform-cu-button"))
+                )
+                login_btn = self.driver.find_element(By.ID, "courseville-login-w-platform-cu-button")
+
+            oauth_url = login_btn.get_attribute("href")
             log.debug("OAuth authorize URL: %s", oauth_url)
-            # Navigate to the OAuth URL (same as clicking the button)
             self.driver.get(oauth_url)
 
             # Wait for username field - this confirms page is loaded
@@ -264,8 +271,8 @@ class AttendanceLogger:
             password_field.send_keys(password)
 
             # Click login
-            login_button = self.driver.find_element(By.ID, "cv-login-cvecologinbutton")
-            login_button.click()
+            submit_button = self.driver.find_element(By.ID, "cv-login-cvecologinbutton")
+            submit_button.click()
 
             # Wait a moment for the page to update (error may appear immediately)
             time.sleep(1)
@@ -284,7 +291,10 @@ class AttendanceLogger:
 
             # Wait for redirect away from login page
             try:
-                wait.until(lambda d: "chulalogin" not in d.current_url and "/api/login" not in d.current_url)
+                if login_method == "platform":
+                    wait.until(lambda d: "/api/login" not in d.current_url)
+                else:
+                    wait.until(lambda d: "chulalogin" not in d.current_url and "/api/login" not in d.current_url)
             except TimeoutException:
                 log.warning("Login redirect timeout (attempt %d), URL: %s", attempt, self.driver.current_url)
                 continue
@@ -314,16 +324,16 @@ class AttendanceLogger:
         # All attempts failed
         raise TimeoutException(f"Login failed after {max_attempts} attempts for {username}")
 
-    def check_in(self, attendance_url: str, username: str, password: str, display_name: str = "") -> str:
+    def check_in(self, attendance_url: str, username: str, password: str, display_name: str = "", login_method: str = "cu_net") -> str:
         """Navigate to the attendance URL for a single user and check in."""
         name = display_name or username
-        log.info("Check-in START: %s (%s)", name, username)
+        log.info("Check-in START: %s (%s) method=%s", name, username, login_method)
         try:
             self.setup_driver()
             self._clear_session()
 
             # Log in first, then visit attendance URL
-            self.login(username, password)
+            self.login(username, password, login_method=login_method)
     
             self.driver.get(attendance_url)
 
@@ -407,7 +417,8 @@ class AttendanceLogger:
                 results.append(f"❌ **{display_name}** — failed to decrypt password (may need to re-register)")
                 continue
 
-            result = self.check_in(attendance_url, info["username"], password, display_name)
+            login_method = info.get("login_method", "cu_net")
+            result = self.check_in(attendance_url, info["username"], password, display_name, login_method=login_method)
             results.append(result)
         return results
 
@@ -447,18 +458,30 @@ executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="selenium_")
 # ---------------------------------------------------------------------------
 # Slash Commands — User Management
 # ---------------------------------------------------------------------------
+class LoginMethod(enum.Enum):
+    cu_net = "cu_net"
+    platform = "platform"
+
+
 @tree.command(name="register", description="Register your MyCourseVille credentials")
 @app_commands.describe(
+    login_method="How you log in: CU Net account or MyCourseVille platform account",
     username="Your MyCourseVille / university username",
     password="Your password",
 )
-async def cmd_register(interaction: discord.Interaction, username: str, password: str):
-    if not re.fullmatch(r"\d{10}", username):
-        await interaction.response.send_message(
-            "❌ Username must be exactly 10 digits (e.g. `6799999999`).",
-            ephemeral=True,
-        )
-        return
+async def cmd_register(
+    interaction: discord.Interaction,
+    login_method: LoginMethod,
+    username: str,
+    password: str,
+):
+    if login_method == LoginMethod.cu_net:
+        if not re.fullmatch(r"\d{10}", username):
+            await interaction.response.send_message(
+                "❌ Username must be exactly 10 digits (e.g. `6799999999`).",
+                ephemeral=True,
+            )
+            return
 
     # Encrypt password before storing
     try:
@@ -477,11 +500,14 @@ async def cmd_register(interaction: discord.Interaction, username: str, password
         "password": encrypted_password,
         "display_name": interaction.user.display_name,
         "encrypted": True,
+        "login_method": login_method.value,
     }
     _persist_users()
-    log.info("User registered: %s (%s)", interaction.user.display_name, username)
+    method_label = "CU Net" if login_method == LoginMethod.cu_net else "MyCourseVille platform"
+    log.info("User registered: %s (%s) via %s", interaction.user.display_name, username, method_label)
     await interaction.response.send_message(
-        f"✅ Registered **{interaction.user.display_name}** with username `{username}`.\n"
+        f"✅ Registered **{interaction.user.display_name}** with username `{username}` "
+        f"(login via **{method_label}**).\n"
         "Your credentials are stored and this message is only visible to you.",
         ephemeral=True,
     )
