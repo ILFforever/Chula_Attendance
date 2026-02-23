@@ -1,13 +1,16 @@
-app = "attendance-bot-changeme"
-primary_region = "sin"
+# fly.toml app configuration file generated for chula-attendance-bot on 2026-02-23T18:03:49+07:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'chula-attendance-bot'
+primary_region = 'sin'
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = 'Dockerfile'
 
 [env]
-  PYTHONUNBUFFERED = "1"
+  PYTHONUNBUFFERED = '1'
 
-[vm]
-  cpu_kind = "shared"
-  cpus = 1
-  memory_mb = 256
+[[vm]]
+  size = 'shared-cpu-1x'
