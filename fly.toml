@@ -14,3 +14,4 @@ primary_region = 'sin'
 
 [[vm]]
   size = 'shared-cpu-1x'
+  memory = 512
