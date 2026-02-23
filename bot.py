@@ -9,6 +9,9 @@ from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import discord
 from discord import app_commands
 from selenium import webdriver
