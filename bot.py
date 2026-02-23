@@ -58,8 +58,9 @@ log.setLevel(logging.DEBUG)
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-CONFIG_FILE = "config.json"
-USERS_FILE = "users.json"
+DATA_DIR = os.environ.get("DATA_DIR", ".")
+CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
+USERS_FILE = os.path.join(DATA_DIR, "users.json")
 
 # Full valid attendance URL: .../attendance_qr_selfcheck/<id>/<code>
 MCV_URL_PATTERN = re.compile(

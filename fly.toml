@@ -11,6 +11,11 @@ primary_region = 'sin'
 
 [env]
   PYTHONUNBUFFERED = '1'
+  DATA_DIR = '/data'
+
+[mounts]
+  source = 'bot_data'
+  destination = '/data'
 
 [[vm]]
   size = 'shared-cpu-1x'
