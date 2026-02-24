@@ -3,7 +3,7 @@ import os
 import re
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor
 
 from dotenv import load_dotenv
@@ -146,6 +146,7 @@ MCV_OAUTH_PLATFORM = (
     "&redirect_uri=https://www.mycourseville.com"
 )
 REQUEST_TIMEOUT = 30
+TZ_BANGKOK = timezone(timedelta(hours=7))
 
 
 class LoginError(Exception):
@@ -370,16 +371,16 @@ class AttendanceLogger:
             matched_kw = [kw for kw in success_keywords if kw in page_source]
             if matched_kw:
                 log.info("%s — SUCCESS (matched: %s)", name, matched_kw)
-                timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+                timestamp = datetime.now(TZ_BANGKOK).strftime("%I:%M %p")
                 return f"✅ **[{name}]** — checked in at `{timestamp}` 🎉"
 
             # If user menu is present, page loaded while logged in
             if "courseville-usermenutrigger" in page_source:
                 log.info("%s — on course page (likely OK)", name)
-                timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+                timestamp = datetime.now(TZ_BANGKOK).strftime("%I:%M %p")
                 return f"✅ **[{name}]** — checked in at `{timestamp}` (unconfirmed)"
 
-            timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+            timestamp = datetime.now(TZ_BANGKOK).strftime("%I:%M %p")
             log.warning("%s — uncertain result", name)
             return f"⚠️ **[{name}]** — uncertain at `{timestamp}`, please verify manually"
 
