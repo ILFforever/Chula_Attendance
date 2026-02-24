@@ -2,20 +2,17 @@ import enum
 import os
 import re
 import json
-import time
-import shutil
-import tempfile
 import logging
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
-from functools import partial
 
 from dotenv import load_dotenv
 load_dotenv()
 
 import discord
 from discord import app_commands
-from selenium import webdriver
+import requests as http_requests
+from bs4 import BeautifulSoup
 
 # Password encryption module
 from password_crypto import (
@@ -24,16 +21,6 @@ from password_crypto import (
     is_encrypted,
     migrate_plaintext_to_encrypted,
     get_encryption_key,
-)
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import (
-    TimeoutException,
-    NoSuchElementException,
-    WebDriverException,
 )
 
 
@@ -50,7 +37,6 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 # Silence noisy libraries — only show our bot logs + warnings from others
-logging.getLogger("selenium").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("discord").setLevel(logging.WARNING)
 log = logging.getLogger("attendance-bot")
@@ -145,286 +131,272 @@ def extract_attendance_url(text: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Attendance Logger (Selenium)
+# Attendance Logger (HTTP requests)
 # ---------------------------------------------------------------------------
-MCV_LOGIN_URL = "https://www.mycourseville.com/api/chulalogin"
+MCV_HOME_URL = "https://www.mycourseville.com/"
+# Hardcoded OAuth URLs (extracted from MCV homepage buttons)
+MCV_OAUTH_CU = (
+    "https://www.mycourseville.com/api/oauth/authorize"
+    "?response_type=code&client_id=mycourseville.com"
+    "&redirect_uri=https://www.mycourseville.com&login_page=itchula"
+)
+MCV_OAUTH_PLATFORM = (
+    "https://www.mycourseville.com/api/oauth/authorize"
+    "?response_type=code&client_id=mycourseville.com"
+    "&redirect_uri=https://www.mycourseville.com"
+)
+REQUEST_TIMEOUT = 30
+
+
+class LoginError(Exception):
+    """Raised when login fails (network / unexpected page)."""
 
 
 class AttendanceLogger:
-    def __init__(self):
-        self.driver = None
-        self._tmp_profile_dir = None
+    """Check in to MyCourseVille using plain HTTP requests (no browser)."""
 
-    def setup_driver(self):
-        """Initialize headless Chrome with options suitable for containers."""
-        if self.driver is not None:
-            return
+    def _new_session(self) -> http_requests.Session:
+        """Create a fresh requests session with a realistic User-Agent."""
+        s = http_requests.Session()
+        s.headers.update({
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+        })
+        return s
 
-        chrome_options = Options()
-        chrome_options.add_argument("--headless=new")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument("--disable-gpu")
-        chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-        chrome_options.add_argument("--window-size=1280,720")
+    # ------------------------------------------------------------------
+    # Login
+    # ------------------------------------------------------------------
+    def login(
+        self,
+        session: http_requests.Session,
+        username: str,
+        password: str,
+        login_method: str = "cu_net",
+        max_attempts: int = 3,
+    ):
+        """Log into MyCourseVille via Chula SSO or platform account.
 
-        # --- Memory optimization (target ≤512 MB) ---
-        chrome_options.add_argument("--disable-extensions")
-        chrome_options.add_argument("--disable-plugins")
-        chrome_options.add_argument("--disable-images")
-        chrome_options.add_argument("--blink-settings=imagesEnabled=false")
-        chrome_options.add_argument("--disable-default-apps")
-        chrome_options.add_argument("--disable-translate")
-        chrome_options.add_argument("--disable-sync")
-        chrome_options.add_argument("--disable-background-networking")
-        chrome_options.add_argument("--disable-software-rasterizer")
-        chrome_options.add_argument("--disable-component-update")
-        chrome_options.add_argument("--disable-backgrounding-occluded-windows")
-        chrome_options.add_argument("--disable-renderer-backgrounding")
-        chrome_options.add_argument("--disable-features=TranslateUI")
-        chrome_options.add_argument("--js-flags=--max-old-space-size=256")
-        chrome_options.add_argument("--single-process")
-        chrome_options.add_argument("--memory-pressure-off")
-        chrome_options.add_argument("--disk-cache-size=1")
-        chrome_options.add_argument("--media-cache-size=1")
-
-        # Use a fresh temp profile to avoid conflicts with running Chrome instances
-        self._tmp_profile_dir = tempfile.mkdtemp(prefix="attendance_chrome_")
-        chrome_options.add_argument(f"--user-data-dir={self._tmp_profile_dir}")
-
-        chrome_bin = os.environ.get("CHROME_BIN")
-        if chrome_bin:
-            chrome_options.binary_location = chrome_bin
-
-        chromedriver_path = os.environ.get("CHROMEDRIVER_PATH")
-        if chromedriver_path:
-            service = Service(executable_path=chromedriver_path)
-        else:
-            service = Service()
-
-        self.driver = webdriver.Chrome(service=service, options=chrome_options)
-        self.driver.implicitly_wait(5)
-        log.info("Chrome driver initialised")
-
-    def _clear_session(self):
-        """Delete all cookies so the next login starts fresh."""
-        self.driver.delete_all_cookies()
-
-    def _is_on_login_page(self) -> bool:
-        """Check if the browser is on ANY MCV login/chooser page."""
-        current = self.driver.current_url
-        if "chulalogin" in current or "/api/login" in current:
-            return True
-        # CU login form
-        try:
-            self.driver.find_element(By.ID, "cv-login-cvecologin-form")
-            return True
-        except NoSuchElementException:
-            pass
-        # Login method chooser ("Log in with CU account", etc.)
-        try:
-            self.driver.find_element(By.XPATH, "//a[contains(@href,'chulalogin')]")
-            return True
-        except NoSuchElementException:
-            pass
-        # Also check for "Please login" text on the page
-        try:
-            self.driver.find_element(By.XPATH, "//*[contains(text(),'Please login')]")
-            return True
-        except NoSuchElementException:
-            return False
-
-    def _is_logged_in(self) -> bool:
-        """Verify we're actually logged in by checking for user menu."""
-        try:
-            self.driver.find_element(By.ID, "courseville-userMenuTrigger")
-            return True
-        except NoSuchElementException:
-            return False
-
-    def login(self, username: str, password: str, login_method: str = "cu_net", max_attempts: int = 3):
-        """Log into MyCourseVille via Chula SSO or platform account."""
+        On success the *session* object holds the authenticated cookies.
+        """
         for attempt in range(1, max_attempts + 1):
             log.info("Login attempt %d/%d for %s (method=%s) …", attempt, max_attempts, username, login_method)
 
-            # First visit main page to establish proper Referer header
-            self.driver.get("https://www.mycourseville.com/")
+            # 1. Visit homepage first to establish session cookies / referer
+            session.get(MCV_HOME_URL, timeout=REQUEST_TIMEOUT)
 
-            if login_method == "platform":
-                # Click "Log in with MyCourseVille platform account" button
-                WebDriverWait(self.driver, 10).until(
-                    EC.presence_of_element_located((By.ID, "courseville-login-w-platform-button"))
-                )
-                login_btn = self.driver.find_element(By.ID, "courseville-login-w-platform-button")
-            else:
-                # Click "Log in with CU account" button
-                WebDriverWait(self.driver, 10).until(
-                    EC.presence_of_element_located((By.ID, "courseville-login-w-platform-cu-button"))
-                )
-                login_btn = self.driver.find_element(By.ID, "courseville-login-w-platform-cu-button")
-
-            oauth_url = login_btn.get_attribute("href")
+            # 2. Use hardcoded OAuth URL (avoids needing to parse JS-rendered page)
+            oauth_url = MCV_OAUTH_PLATFORM if login_method == "platform" else MCV_OAUTH_CU
             log.debug("OAuth authorize URL: %s", oauth_url)
-            self.driver.get(oauth_url)
 
-            # Wait for username field - this confirms page is loaded
-            WebDriverWait(self.driver, 10).until(
-                EC.presence_of_element_located((By.ID, "username"))
-            )
+            # 2. Follow OAuth URL → lands on the SSO login form
+            resp = session.get(oauth_url, timeout=REQUEST_TIMEOUT)
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "html.parser")
 
-            wait = WebDriverWait(self.driver, 20)
-
-            # Fill credentials
-            try:
-                username_field = wait.until(
-                    EC.presence_of_element_located((By.ID, "username"))
-                )
-            except TimeoutException:
-                log.error("TIMEOUT waiting for username field! URL: %s", self.driver.current_url)
+            # Find the login form and its action URL
+            form = soup.find("form", id="cv-login-cvecologin-form")
+            if not form:
+                # Try any form that contains the username field
+                form = soup.find("form", attrs={"action": True})
+            if not form:
+                log.error("Could not find login form (attempt %d), URL: %s", attempt, resp.url)
                 continue
 
-            # For platform login, select the correct radio button (email vs username)
+            action_url = form.get("action", "")
+            if action_url and not action_url.startswith("http"):
+                # Relative URL — resolve against current page
+                from urllib.parse import urljoin
+                action_url = urljoin(resp.url, action_url)
+
+            # 3. Collect all form fields (hidden, default values, etc.)
+            form_data = {}
+            for inp in form.find_all("input"):
+                name = inp.get("name")
+                if not name:
+                    continue
+                inp_type = (inp.get("type") or "text").lower()
+                # Skip submit buttons
+                if inp_type in ("submit", "button", "image"):
+                    continue
+                # For radio/checkbox, only include if checked by default
+                if inp_type in ("radio", "checkbox"):
+                    if inp.has_attr("checked"):
+                        form_data[name] = inp.get("value", "on")
+                    continue
+                form_data[name] = inp.get("value", "")
+
+            # Override with our credentials — find the actual name attributes
+            # (the input id="username" may have name="name" on the platform form)
+            username_input = form.find("input", id="username")
+            password_input = form.find("input", id="password")
+            username_field = username_input.get("name", "username") if username_input else "username"
+            password_field = password_input.get("name", "password") if password_input else "password"
+            form_data[username_field] = username
+            form_data[password_field] = password
+
+            # For platform login, select email vs username radio
             if login_method == "platform":
-                is_email = re.search(r"@", username)
-                if is_email:
-                    self.driver.find_element(By.ID, "loginfield_email").click()
+                # Find the radio button to determine the correct field name
+                email_radio = form.find("input", id="loginfield_email")
+                name_radio = form.find("input", id="loginfield_name")
+                radio_field = "loginfield"  # fallback
+                if email_radio and email_radio.get("name"):
+                    radio_field = email_radio["name"]
+                elif name_radio and name_radio.get("name"):
+                    radio_field = name_radio["name"]
+
+                if "@" in username:
+                    form_data[radio_field] = email_radio.get("value", "email") if email_radio else "email"
                 else:
-                    self.driver.find_element(By.ID, "loginfield_name").click()
+                    form_data[radio_field] = name_radio.get("value", "name") if name_radio else "name"
 
-            username_field.clear()
-            username_field.send_keys(username)
+            # 4. POST the login form (don't auto-follow redirects —
+            #    the server may redirect POST → GET to a path that 404s)
+            log.debug("POSTing credentials to %s", action_url)
+            resp = session.post(
+                action_url,
+                data=form_data,
+                timeout=REQUEST_TIMEOUT,
+                allow_redirects=False,
+            )
 
-            password_field = self.driver.find_element(By.ID, "password")
-            password_field.clear()
-            password_field.send_keys(password)
-
-            # Click login
-            submit_button = self.driver.find_element(By.ID, "cv-login-cvecologinbutton")
-            submit_button.click()
-
-            # Wait a moment for the page to update (error may appear immediately)
-            time.sleep(1)
-
-            # Check for credential errors FIRST (before waiting for redirect)
-            # Thai error: "ไม่สามารถเข้าสู่ระบบได้เนื่องจาก ชื่อบัญชี หรือ รหัสผ่านผิดพลาด"
-            page_src = self.driver.page_source
-            page_src_lower = page_src.lower()
-            if ("incorrect" in page_src_lower or "invalid" in page_src_lower or
-                "ไม่ถูกต้อง" in page_src or "ผิดพลาด" in page_src or
-                "ไม่สามารถเข้าสู่ระบบได้เนื่องจาก" in page_src or
-                "ชื่อบัญชี หรือ รหัสผ่านผิดพลาด" in page_src or
-                "username or password is incorrect" in page_src_lower):
+            # 5. Check for credential errors on the POST response itself
+            page_text = resp.text
+            page_lower = page_text.lower()
+            error_markers = [
+                "incorrect", "invalid",
+                "ไม่ถูกต้อง", "ผิดพลาด",
+                "ไม่สามารถเข้าสู่ระบบได้เนื่องจาก",
+                "ชื่อบัญชี หรือ รหัสผ่านผิดพลาด",
+                "username or password is incorrect",
+            ]
+            if any(m in (page_lower if m.isascii() else page_text) for m in error_markers):
                 log.error("Wrong credentials for %s!", username)
                 raise WrongCredentialsError("Login failed: wrong credentials")
 
-            # Wait for redirect away from login page
-            try:
-                if login_method == "platform":
-                    wait.until(lambda d: "/api/login" not in d.current_url)
-                else:
-                    wait.until(lambda d: "chulalogin" not in d.current_url and "/api/login" not in d.current_url)
-            except TimeoutException:
-                log.warning("Login redirect timeout (attempt %d), URL: %s", attempt, self.driver.current_url)
-                continue
+            # 6. Handle redirect manually — cookies are already set by the 302
+            if resp.is_redirect or resp.is_permanent_redirect:
+                redirect_url = resp.headers.get("Location", "")
+                log.debug("Login POST redirected to: %s", redirect_url)
+                if redirect_url:
+                    from urllib.parse import urljoin
+                    redirect_url = urljoin(resp.url, redirect_url)
+                    # Check if redirected back to a login page (= failed)
+                    if (redirect_url.rstrip("/").endswith("/login")
+                            or "/api/login" in redirect_url
+                            or "/chulalogin" in redirect_url):
+                        # Follow the redirect to check for error messages
+                        resp = session.get(redirect_url, timeout=REQUEST_TIMEOUT)
+                        page_after = resp.text
+                        page_after_lower = page_after.lower()
 
-            # Wait for either login success (user menu) or course page
-            try:
-                WebDriverWait(self.driver, 10).until(
-                    lambda d: self._is_logged_in() or "courseville" in d.current_url
-                )
-            except TimeoutException:
-                log.debug("No immediate login confirmation, proceeding...")
-
-            # VERIFY: are we actually logged in?
-            if self._is_logged_in():
-                log.info("Login VERIFIED for %s → %s", username, self.driver.current_url)
+                        # Check for credential error on the redirected page
+                        if any(m in (page_after_lower if m.isascii() else page_after) for m in error_markers):
+                            log.error("Wrong credentials for %s (detected after redirect)", username)
+                            raise WrongCredentialsError("Login failed: wrong credentials")
+                        # SSO redirects back to login page on wrong password —
+                        # this is never a transient error, always bad credentials
+                        log.error("Wrong credentials for %s (redirected back to login: %s, status=%d)", username, redirect_url, resp.status_code)
+                        raise WrongCredentialsError("Login failed: wrong credentials")
+                    # Follow the redirect
+                    resp = session.get(redirect_url, timeout=REQUEST_TIMEOUT)
+                log.info("Login OK for %s (redirected → %s)", username, resp.url)
                 return
 
-            # Still on login page somehow?
-            if self._is_on_login_page():
-                log.warning("Still on login page after attempt %d", attempt)
+            # No redirect — check the response page
+            if resp.status_code >= 400:
+                log.warning("Login POST returned %d (attempt %d)", resp.status_code, attempt)
                 continue
 
-            # Redirected somewhere but can't confirm login — accept it
-            log.info("Login redirected for %s → %s (no user menu yet)", username, self.driver.current_url)
+            page_text = resp.text
+            if "courseville-userMenuTrigger" in page_text or "mycourseville.com" in resp.url:
+                log.info("Login OK for %s → %s", username, resp.url)
+                return
+
+            # Still on a login page?
+            if "/chulalogin" in resp.url or "/api/login" in resp.url or resp.url.rstrip("/").endswith("/login"):
+                log.warning("Still on login page after attempt %d, URL: %s", attempt, resp.url)
+                continue
+
+            # Redirected somewhere — probably OK
+            log.info("Login redirected for %s → %s (accepting)", username, resp.url)
             return
 
-        # All attempts failed
-        raise TimeoutException(f"Login failed after {max_attempts} attempts for {username}")
+        raise LoginError(f"Login failed after {max_attempts} attempts for {username}")
 
-    def check_in(self, attendance_url: str, username: str, password: str, display_name: str = "", login_method: str = "cu_net") -> str:
-        """Navigate to the attendance URL for a single user and check in."""
+    # ------------------------------------------------------------------
+    # Check-in
+    # ------------------------------------------------------------------
+    def check_in(
+        self,
+        attendance_url: str,
+        username: str,
+        password: str,
+        display_name: str = "",
+        login_method: str = "cu_net",
+    ) -> str:
+        """Log in and visit the attendance URL for a single user."""
         name = display_name or username
         log.info("Check-in START: %s (%s) method=%s", name, username, login_method)
+        session = self._new_session()
         try:
-            self.setup_driver()
-            self._clear_session()
+            self.login(session, username, password, login_method=login_method)
 
-            # Log in first, then visit attendance URL
-            self.login(username, password, login_method=login_method)
-    
-            self.driver.get(attendance_url)
-
-            # Wait for page to load - check for various possible states
-            try:
-                WebDriverWait(self.driver, 10).until(
-                    lambda d: (
-                        "invalid" in d.page_source.lower() or
-                        d.find_elements(By.ID, "courseville-userMenuTrigger") or
-                        "attendance" in d.page_source.lower()
-                    )
-                )
-            except TimeoutException:
-                log.debug("Page load timeout, checking current state...")
-
-            page_source = self.driver.page_source.lower()
+            # Visit the attendance URL (cookies are carried automatically)
+            resp = session.get(attendance_url, timeout=REQUEST_TIMEOUT)
+            resp.raise_for_status()
+            page_source = resp.text.lower()
 
             # Check for expired / invalid code
             if "invalid or expired" in page_source or "หมดอายุ" in page_source:
                 log.warning("%s — link expired or invalid", name)
-                return f"⚠️ **{name}** — link expired or invalid"
+                return f"🕐 **[{name}]** — link expired or invalid"
+
+            # Check for not a course member
+            if "not a member of this course" in page_source:
+                log.warning("%s — not a course member", name)
+                return f"🚫 **[{name}]** — not a member of this course"
 
             # Check for success indicators
             success_keywords = [
                 "success", "สำเร็จ", "checked", "เช็คชื่อแล้ว",
-                "completed", "บันทึกแล้ว", "attendance_qr_selfcheck",
+                "completed", "บันทึกแล้ว",
                 "has been recorded", "your attendance for",
             ]
             matched_kw = [kw for kw in success_keywords if kw in page_source]
             if matched_kw:
                 log.info("%s — SUCCESS (matched: %s)", name, matched_kw)
                 timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
-                return f"✅ **{name}** — checked in at {timestamp}"
+                return f"✅ **[{name}]** — checked in at `{timestamp}` 🎉"
 
-            # If we landed on a course page, the check-in likely went through
-            try:
-                self.driver.find_element(By.ID, "courseville-userMenuTrigger")
+            # If user menu is present, page loaded while logged in
+            if "courseville-usermenutrigger" in page_source:
                 log.info("%s — on course page (likely OK)", name)
                 timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
-                return f"✅ **{name}** — page loaded at {timestamp}"
-            except NoSuchElementException:
-                pass
+                return f"✅ **[{name}]** — checked in at `{timestamp}` (unconfirmed)"
 
             timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
             log.warning("%s — uncertain result", name)
-            return f"⚠️ **{name}** — page loaded at {timestamp} (verify manually)"
+            return f"⚠️ **[{name}]** — uncertain at `{timestamp}`, please verify manually"
 
         except WrongCredentialsError:
             log.error("%s — wrong credentials", name)
-            return f"❌ **{name}** — wrong username or password"
-        except TimeoutException:
-            log.error("%s — timeout", name)
-            return f"❌ **{name}** — timed out waiting for page"
-        except NoSuchElementException as exc:
-            log.error("%s — element not found: %s", name, exc.msg)
-            return f"❌ **{name}** — element not found: {exc.msg}"
-        except WebDriverException as exc:
-            log.error("%s — browser error: %s", name, exc.msg)
-            return f"❌ **{name}** — browser error"
+            return f"🔑 **[{name}]** — wrong username or password, use `/register` to update"
+        except LoginError:
+            log.error("%s — login failed", name)
+            return f"🔒 **[{name}]** — login failed, try again later"
+        except http_requests.RequestException as exc:
+            log.error("%s — request error: %s", name, exc)
+            return f"🌐 **[{name}]** — network error, MCV might be down"
         except Exception as exc:
             log.exception("%s — unexpected error", name)
-            return f"❌ **{name}** — unexpected error: {exc}"
+            return f"💥 **[{name}]** — something went wrong"
         finally:
+            session.close()
             log.info("Check-in END: %s", name)
 
     def check_in_all(self, attendance_url: str) -> list[tuple[str, str]]:
@@ -454,20 +426,8 @@ class AttendanceLogger:
         return results
 
     def cleanup(self):
-        if self.driver:
-            try:
-                self.driver.quit()
-            except Exception:
-                pass
-            self.driver = None
-            log.info("Browser closed")
-        if self._tmp_profile_dir and os.path.isdir(self._tmp_profile_dir):
-            try:
-                shutil.rmtree(self._tmp_profile_dir, ignore_errors=True)
-                log.debug("Temp profile cleaned up: %s", self._tmp_profile_dir)
-            except Exception:
-                pass
-            self._tmp_profile_dir = None
+        """No persistent resources to clean up with requests."""
+        log.info("Cleanup called (no-op for HTTP client)")
 
 
 # ---------------------------------------------------------------------------
@@ -480,7 +440,7 @@ bot = discord.Client(intents=intents)
 tree = app_commands.CommandTree(bot)
 attendance = AttendanceLogger()
 bot_start_time = datetime.now(timezone.utc)
-executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="selenium_")
+executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="checkin_")
 
 
 # URL extraction is now the only trigger - keywords removed
@@ -698,7 +658,7 @@ async def cmd_status(interaction: discord.Interaction):
     await interaction.response.send_message(
         f"🤖 **Bot Status**\n"
         f"• Uptime: {hours}h {minutes}m {seconds}s\n"
-        f"• Browser active: {'Yes' if attendance.driver else 'No'}\n"
+        f"• Engine: HTTP requests (lightweight)\n"
         f"• Registered users: {user_count}\n"
         f"• Monitoring: {channel_list}",
         ephemeral=True,
@@ -725,7 +685,7 @@ async def on_ready():
 
 
 async def run_check_in_async(attendance_url: str) -> list[tuple[str, str]]:
-    """Run blocking Selenium operations in a thread pool to avoid blocking the event loop."""
+    """Run blocking HTTP check-in operations in a thread pool to avoid blocking the event loop."""
     loop = bot.loop
     return await loop.run_in_executor(executor, attendance.check_in_all, attendance_url)
 
