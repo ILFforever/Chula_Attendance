@@ -12,7 +12,7 @@ A Discord bot that automatically checks in registered users when a MyCourseVille
 
 | Command | Description |
 |---------|-------------|
-| `/register <username> <password>` | Save your credentials (ephemeral) |
+| `/register <login_method> <username> <password>` | Save your credentials (ephemeral) |
 | `/unregister` | Remove your credentials |
 | `/users` | List registered users |
 | `/monitor [channel]` | Watch a channel for attendance links |
@@ -20,13 +20,20 @@ A Discord bot that automatically checks in registered users when a MyCourseVille
 | `/channels` | List monitored channels |
 | `/checkin <url>` | Manually trigger check-in |
 | `/status` | Bot uptime and info |
+| `/help` | Show all commands |
+
+## Login Methods
+
+| Method | For |
+|--------|-----|
+| **CU Net** | Chula students/staff with a 10-digit student ID |
+| **MyCourseVille** | Platform accounts (username or email) |
 
 ## Setup
 
 ### Requirements
 
 - Python 3.11+
-- Chrome/Chromium + ChromeDriver
 - A Discord bot token
 
 ### Environment Variables
@@ -35,8 +42,7 @@ A Discord bot that automatically checks in registered users when a MyCourseVille
 |----------|----------|-------------|
 | `DISCORD_TOKEN` | Yes | Discord bot token |
 | `ENCRYPTION_KEY` | Yes | Key for encrypting stored passwords |
-| `CHROME_BIN` | No | Path to Chrome binary |
-| `CHROMEDRIVER_PATH` | No | Path to ChromeDriver |
+| `DATA_DIR` | No | Directory for persistent data (default: `.`) |
 
 ### Run Locally
 
@@ -56,3 +62,7 @@ fly deploy
 ```
 
 Pushes to `main` auto-deploy via GitHub Actions.
+
+## Architecture
+
+The bot uses lightweight HTTP requests (`requests` + `BeautifulSoup`) instead of a headless browser, keeping RAM usage under 256 MB on Fly.io.
