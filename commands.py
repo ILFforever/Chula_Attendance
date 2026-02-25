@@ -90,7 +90,8 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
         await interaction.response.send_message(
             f"✅ Registered **{interaction.user.display_name}** with username `{username}` "
             f"(login via **{method_label}**).\n"
-            "Your credentials are stored and this message is only visible to you.",
+            "Your credentials are stored and this message is only visible to you.\n\n"
+            "You can use `/logincheck` to verify your credentials with the MCV website",
             ephemeral=True,
         )
 
