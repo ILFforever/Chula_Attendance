@@ -253,6 +253,7 @@ class AttendanceLogger:
                 "success", "สำเร็จ", "checked", "เช็คชื่อแล้ว",
                 "completed", "บันทึกแล้ว",
                 "has been recorded", "your attendance for",
+                "การเข้าเรียนของคุณสำหรับ", "ได้รับการบันทึกเรียบร้อย",
             ]
             matched_kw = [kw for kw in success_keywords if kw in page_source]
             if matched_kw:
