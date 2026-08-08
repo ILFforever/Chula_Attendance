@@ -13,6 +13,8 @@ from config import (
     persist_channels,
     persist_users,
     leaderboard_counts,
+    SCAN_SECRET,
+    SCAN_BASE_URL,
 )
 from password_crypto import encrypt_password, decrypt_password
 from attendance import (
@@ -303,6 +305,7 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
             "\n"
             "**Attendance**\n"
             "`/checkin <url>` — Manually trigger check-in with a MyCourseVille attendance URL\n"
+            "`/scanner` — DM yourself a phone-camera QR scanner that checks everyone in\n"
             "`/logincheck` — Test if your saved credentials can log in\n"
             "`/status` — Show bot uptime, registered users, and monitored channels\n"
             "`/leaderboard` — See who's posted the most attendance links\n"
@@ -480,6 +483,27 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
             "\n"
             "🛠️ Made by **Tanabodhi Mukura** (@ILFforever)\n"
             "🔗 <https://github.com/ILFforever/Chula_Attendance>",
+            ephemeral=True,
+        )
+
+    @tree.command(name="scanner", description="DM yourself a link to the on-device QR scanner")
+    async def cmd_scanner(interaction: discord.Interaction):
+        if not SCAN_SECRET or not SCAN_BASE_URL:
+            await interaction.response.send_message(
+                "📷 The QR scanner isn't configured — the host needs to set `SCAN_SECRET` and `SCAN_BASE_URL`.",
+                ephemeral=True,
+            )
+            return
+
+        link = f"{SCAN_BASE_URL}/scan#t={SCAN_SECRET}"
+        await interaction.response.send_message(
+            f"📷 **Attendance QR Scanner**\n"
+            f"{link}\n"
+            "\n"
+            "Open it on your phone, allow camera access, and point it at the classroom QR code. "
+            "The code is decoded on your device — only the link reaches the bot, which then checks in "
+            "everyone registered.\n"
+            "⚠️ Anyone with this link can trigger a check-in, so don't share it outside the group.",
             ephemeral=True,
         )
 

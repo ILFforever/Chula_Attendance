@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Attendance Scanner</title>
+<style>
+  :root {
+    --bg: #0e1013;
+    --panel: #181b20;
+    --line: #262b33;
+    --text: #e7eaee;
+    --muted: #8b949e;
+    --accent: #5865f2;
+    --ok: #3ba55d;
+    --err: #ed4245;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+  }
+  main { max-width: 480px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1 { font-size: 19px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin: 0 0 18px; }
+
+  #viewport {
+    position: relative;
+    aspect-ratio: 1;
+    background: #000;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    overflow: hidden;
+  }
+  video { width: 100%; height: 100%; object-fit: cover; display: block; }
+  #reticle {
+    position: absolute; inset: 18%;
+    border: 2px solid rgba(255,255,255,.55);
+    border-radius: 10px;
+    box-shadow: 0 0 0 100vmax rgba(0,0,0,.35);
+    transition: border-color .2s;
+  }
+  #viewport.hit #reticle { border-color: var(--ok); }
+
+  #status {
+    margin: 14px 0 0;
+    padding: 12px 14px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--muted);
+    border-radius: 8px;
+    font-size: 14px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  #status.busy  { border-left-color: var(--accent); }
+  #status.ok    { border-left-color: var(--ok); }
+  #status.error { border-left-color: var(--err); }
+
+  button {
+    width: 100%; margin-top: 14px; padding: 13px;
+    font: inherit; font-weight: 600; color: #fff;
+    background: var(--accent); border: 0; border-radius: 8px; cursor: pointer;
+  }
+  button[hidden] { display: none; }
+  button:active { transform: translateY(1px); }
+  button:disabled { opacity: .5; cursor: default; }
+
+  .divider {
+    display: flex; align-items: center; gap: 12px;
+    margin: 22px 0 14px; color: var(--muted); font-size: 12px;
+    text-transform: uppercase; letter-spacing: .06em;
+  }
+  .divider::before, .divider::after {
+    content: ''; flex: 1; height: 1px; background: var(--line);
+  }
+
+  input[type="url"] {
+    width: 100%; padding: 12px 13px;
+    font: inherit; font-size: 16px;   /* 16px stops iOS zooming on focus */
+    color: var(--text); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 8px;
+  }
+  input[type="url"]:focus { outline: none; border-color: var(--accent); }
+  input[type="url"]::placeholder { color: #5c6672; }
+
+  .foot { margin-top: 20px; color: var(--muted); font-size: 12px; }
+  .foot a { color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Attendance Scanner</h1>
+  <p class="sub">Point at the classroom QR code. Decoding happens on this device — only the link is sent to the bot, which checks in <strong>everyone registered</strong>.</p>
+
+  <div id="viewport">
+    <video id="video" playsinline muted></video>
+    <div id="reticle"></div>
+  </div>
+
+  <p id="status">Starting camera…</p>
+  <button id="again" hidden>Scan another</button>
+
+  <div class="divider">or paste a link</div>
+  <form id="pasteForm">
+    <input type="url" id="pasteUrl" inputmode="url" autocomplete="off"
+           autocapitalize="off" spellcheck="false"
+           placeholder="https://www.mycourseville.com/?q=…">
+    <button type="submit" id="pasteGo">Check in with this link</button>
+  </form>
+
+  <p class="foot">
+    Saved on this device — bookmark this page or add it to your home screen and it'll
+    keep working. <a href="#" id="forget">Forget this device</a> if it's not yours.
+  </p>
+</main>
+
+<script src="/static/jsQR.js"></script>
+<script>
+(function () {
+  var MCV = /https?:\/\/(?:www\.)?mycourseville\.com\/\?q=courseville\/course\/\d+\/attendance_qr_selfcheck\/\d+\/[A-Za-z0-9]+/;
+
+  var video    = document.getElementById('video');
+  var viewport = document.getElementById('viewport');
+  var statusEl = document.getElementById('status');
+  var againBtn = document.getElementById('again');
+  var pasteForm= document.getElementById('pasteForm');
+  var pasteUrl = document.getElementById('pasteUrl');
+  var pasteGo  = document.getElementById('pasteGo');
+  var canvas   = document.createElement('canvas');
+  var ctx      = canvas.getContext('2d', { willReadFrequently: true });
+
+  var detector = null;
+  var timer    = null;
+  var halted   = false;
+
+  // Token arrives in the fragment so it never reaches the server in a request
+  // line. Stash it in localStorage — that way the bare /scan URL keeps working
+  // forever, so the page can be bookmarked or added to the home screen once and
+  // reopened without the link. Then scrub the token out of the address bar.
+  var secret = localStorage.getItem('scan_token') || '';
+  var m = /[#&]t=([^&]+)/.exec(location.hash);
+  if (m) {
+    secret = decodeURIComponent(m[1]);
+    localStorage.setItem('scan_token', secret);
+    history.replaceState(null, '', location.pathname);
+  }
+
+  function say(msg, cls) {
+    statusEl.textContent = msg;
+    statusEl.className = cls || '';
+  }
+
+  function stop() {
+    halted = true;
+    clearTimeout(timer);
+    var s = video.srcObject;
+    if (s) s.getTracks().forEach(function (t) { t.stop(); });
+    video.srcObject = null;
+  }
+
+  async function start() {
+    if (!secret) {
+      say('No access token. Open the scanner link the bot sent you.', 'error');
+      return;
+    }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      viewport.hidden = true;
+      say('No camera available here — paste the link below instead.', 'error');
+      return;
+    }
+    try {
+      video.srcObject = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' } }, audio: false
+      });
+      await video.play();
+    } catch (e) {
+      viewport.hidden = true;
+      say('Camera blocked (' + e.name + '). Allow access and reload, or paste the link below.', 'error');
+      return;
+    }
+    if ('BarcodeDetector' in window) {
+      try { detector = new BarcodeDetector({ formats: ['qr_code'] }); } catch (e) { detector = null; }
+    }
+    halted = false;
+    say('Looking for a QR code…');
+    tick();
+  }
+
+  async function tick() {
+    if (halted) return;
+    var raw = null;
+    try {
+      if (detector) {
+        var found = await detector.detect(video);
+        if (found.length) raw = found[0].rawValue;
+      } else if (video.videoWidth) {
+        // Downscale to 480px wide — plenty for jsQR and ~4x cheaper per frame.
+        var w = 480, h = Math.round(video.videoHeight * (480 / video.videoWidth));
+        canvas.width = w; canvas.height = h;
+        ctx.drawImage(video, 0, 0, w, h);
+        var res = jsQR(ctx.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: 'dontInvert' });
+        if (res) raw = res.data;
+      }
+    } catch (e) { /* transient decode failure — just try the next frame */ }
+
+    if (raw) {
+      var hit = MCV.exec(raw);
+      if (hit) { viewport.classList.add('hit'); return submit(hit[0]); }
+      say('That QR code is not an attendance link — keep scanning.', 'error');
+    }
+    timer = setTimeout(tick, 120);
+  }
+
+  async function submit(url) {
+    stop();
+    pasteGo.disabled = true;
+    say('Sending to the bot…', 'busy');
+    try {
+      var r = await fetch('/api/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: url, secret: secret })
+      });
+      var body = await r.json();
+      if (!r.ok) {
+        say(body.error || ('Request failed (' + r.status + ')'), 'error');
+      } else {
+        say(body.message || 'Done.', 'ok');
+      }
+    } catch (e) {
+      say('Network error — is the bot running?', 'error');
+    }
+    pasteGo.disabled = false;
+    againBtn.hidden = false;
+  }
+
+  // Manual fallback: paste a link someone forwarded, or use it when the camera
+  // is unavailable (permission denied, no camera, desktop browser).
+  pasteForm.addEventListener('submit', function (e) {
+    e.preventDefault();
+    if (!secret) { return say('No access token. Open the scanner link the bot sent you.', 'error'); }
+    var hit = MCV.exec(pasteUrl.value.trim());
+    if (!hit) {
+      return say('That doesn’t look like a MyCourseVille attendance link. It should end in ' +
+                 '/attendance_qr_selfcheck/<id>/<code>.', 'error');
+    }
+    pasteUrl.value = '';
+    pasteUrl.blur();
+    submit(hit[0]);
+  });
+
+  document.getElementById('forget').addEventListener('click', function (e) {
+    e.preventDefault();
+    localStorage.removeItem('scan_token');
+    secret = '';
+    stop();
+    say('Token cleared. Open the bot’s scanner link again to re-enable.', 'error');
+  });
+
+  againBtn.addEventListener('click', function () {
+    againBtn.hidden = true;
+    viewport.hidden = false;
+    viewport.classList.remove('hit');
+    start();
+  });
+
+  start();
+})();
+</script>
+</body>
+</html>

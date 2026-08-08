@@ -32,6 +32,12 @@ USERS_FILE = os.path.join(DATA_DIR, "users.json")
 LEADERBOARD_FILE = os.path.join(DATA_DIR, "leaderboard.json")
 DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN", "")
 
+# QR scanner web server — shared secret gating /api/scan, and the port Fly
+# routes public HTTPS traffic to.
+SCAN_SECRET = os.environ.get("SCAN_SECRET", "")
+WEB_PORT = int(os.environ.get("WEB_PORT", "8080"))
+SCAN_BASE_URL = os.environ.get("SCAN_BASE_URL", "").rstrip("/")
+
 # How long a posted link is remembered for duplicate detection. Attendance
 # codes are valid for at most a day, so anything older than this can never
 # be a "real" duplicate — safe to forget it and keep the file tiny forever.

@@ -75,6 +75,29 @@ flyctl secrets set DISCORD_TOKEN=your_discord_bot_token_here
 flyctl deploy
 ```
 
+## QR Scanner (optional)
+
+The bot can also serve a phone-camera QR scanner at `https://<your-app>.fly.dev/scan`.
+The QR code is decoded **in the browser** — only the decoded link is sent to the bot,
+which then checks in every registered user.
+
+Enable it with two secrets:
+
+```bash
+flyctl secrets set SCAN_SECRET=$(python -c "import secrets; print(secrets.token_urlsafe(24))")
+flyctl secrets set SCAN_BASE_URL=https://chula-attendance-bot.fly.dev
+```
+
+Then run `/scanner` in Discord to get the link DM'd to you (it arrives as an ephemeral
+message only you can see). Leave `SCAN_SECRET` unset and the web server never starts.
+
+Notes:
+- The camera only works over HTTPS — fine on `*.fly.dev`, but plain `http://` won't work
+  for local testing outside `localhost`.
+- `auto_stop_machines = false` in `fly.toml` is deliberate: the machine is a long-lived
+  Discord gateway client and must not be suspended when HTTP traffic goes idle.
+- Anyone holding `SCAN_SECRET` can trigger a check-in. Rotate it by setting a new secret.
+
 ## Key Management Best Practices
 
 ### DO:

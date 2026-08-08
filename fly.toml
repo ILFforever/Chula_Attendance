@@ -12,10 +12,29 @@ primary_region = 'sin'
 [env]
   PYTHONUNBUFFERED = '1'
   DATA_DIR = '/data'
+  # Public base URL the /scanner command hands out. Not a secret — the token
+  # is appended as a URL fragment at DM time.
+  SCAN_BASE_URL = 'https://chula-attendance-bot.fly.dev'
 
 [mounts]
   source = 'bot_data'
   destination = '/data'
+
+# QR scanner page. auto_stop must stay off — this machine is a long-lived
+# Discord gateway client, not a request-driven web app.
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = '30s'
+    timeout = '5s'
+    grace_period = '10s'
+    method = 'GET'
+    path = '/health'
 
 [[vm]]
   size = 'shared-cpu-1x'
