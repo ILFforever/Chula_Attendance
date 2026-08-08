@@ -6,14 +6,19 @@ from discord import app_commands
 
 from config import (
     log,
+    BOT_VERSION,
     DISCORD_TOKEN,
     monitored_channels,
     registered_users,
+    is_duplicate_link,
+    mark_link_seen,
+    record_leaderboard_post,
 )
 from attendance import (
     AttendanceLogger,
     MCV_URL_PARTIAL,
     extract_attendance_url,
+    fetch_public_course_info,
 )
 import commands
 
@@ -43,9 +48,9 @@ async def on_ready():
         await tree.sync(guild=guild)
     await bot.change_presence(activity=discord.Activity(
         type=discord.ActivityType.watching,
-        name="👀 for attendance links | 🔗 github.com/ILFforever/Chula_Attendance",
+        name=f"👀 for attendance links | v{BOT_VERSION} | 🔗 github.com/ILFforever/Chula_Attendance",
     ))
-    log.info("Bot is online as %s (ID: %s)", bot.user, bot.user.id)
+    log.info("Bot is online as %s (ID: %s) — v%s", bot.user, bot.user.id, BOT_VERSION)
     log.info("Slash commands synced")
     log.info("Monitoring channels: %s", monitored_channels or "(none)")
     log.info("Registered users: %d", len(registered_users))
@@ -62,19 +67,41 @@ async def on_message(message: discord.Message):
     attendance_url = extract_attendance_url(message.content)
 
     if attendance_url:
+        is_dupe = is_duplicate_link(attendance_url)
+        if is_dupe:
+            log.info("Duplicate attendance link from %s, re-checking in without leaderboard credit: %s", message.author, attendance_url)
+
+        course_info = await bot.loop.run_in_executor(executor, fetch_public_course_info, attendance_url)
+        course_id = course_info["code"] if course_info else None
         log.info(
-            "Attendance URL detected from %s: %s",
+            "Attendance URL detected from %s: %s (course %s)",
             message.author,
             attendance_url,
+            course_info["title"] if course_info else "unknown",
         )
         await message.add_reaction("⏳")
 
-        status_msg = await message.channel.send(
-            f"⏳ Attendance link detected! Checking in {len(registered_users)} user(s) …"
+        enrolled_count = sum(
+            1 for info in registered_users.values()
+            if not info.get("subjects") or course_id in info.get("subjects", [])
         )
-        results = await run_check_in_async(attendance_url)
-        await status_msg.edit(content="\n".join(r for _, r in results))
-        await dm_results(results)
+        course_label = f"**{course_info['title']}**" if course_info else "an attendance link (couldn't identify the course)"
+        status_msg = await message.channel.send(
+            f"⏳ Detected {course_label}! Checking in {enrolled_count} user(s) …"
+        )
+        results = await run_check_in_async(attendance_url, course_id)
+        results_header = f"📋 **{course_info['title']}**\n" if course_info else "📋 **Attendance Check-in**\n"
+        if is_dupe:
+            results_header += "_(this link was already posted before — no leaderboard credit for this post)_\n"
+        await status_msg.edit(content=results_header + "\n".join(r for _, r in results))
+        await dm_results(results, course_info["title"] if course_info else None)
+
+        # A link only "counts" for the leaderboard the first time it's posted,
+        # and only if it actually produced a real successful check-in —
+        # filters out both re-posts and stale/expired/fake links.
+        mark_link_seen(attendance_url)
+        if not is_dupe and any("✅" in r for _, r in results):
+            record_leaderboard_post(str(message.author.id), message.author.display_name)
 
         await message.remove_reaction("⏳", bot.user)
         await message.add_reaction("✅")

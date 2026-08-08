@@ -1,0 +1,598 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chula Attendance — never miss a check-in again</title>
+<meta name="description" content="A Discord bot that watches your class channel for MyCourseVille attendance links and checks everyone in automatically. Open source, encrypted, built for Chula students.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2222%22 fill=%22%23c31569%22/><text x=%2250%22 y=%2268%22 font-size=%2258%22 text-anchor=%22middle%22 fill=%22white%22 font-family=%22Georgia,serif%22>C</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#1c1116;
+    --ink-soft:#4a3a40;
+    --muted:#7a656c;
+    --paper:#fbf6f7;
+    --paper-raised:#ffffff;
+    --line:#ecdce2;
+    --pink:#c31569;
+    --pink-deep:#8f0f4d;
+    --pink-tint:#f7dee8;
+    --pink-tint-2:#fbeef3;
+    --focus:#8f0f4d;
+    --shadow: 0 1px 2px rgba(28,17,22,.04);
+    --max: 1120px;
+    --pad: clamp(1.25rem, 4vw, 3rem);
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --ink:#f3e9ec;
+      --ink-soft:#d9c4cc;
+      --muted:#a98d97;
+      --paper:#170e12;
+      --paper-raised:#1f1319;
+      --line:#3a2530;
+      --pink:#ef5c9e;
+      --pink-deep:#f893c0;
+      --pink-tint:#341d28;
+      --pink-tint-2:#2a1620;
+      --shadow: 0 1px 2px rgba(0,0,0,.4);
+    }
+  }
+  *{box-sizing:border-box}
+  html{color-scheme:light dark}
+  body{
+    margin:0;
+    background:var(--paper);
+    color:var(--ink);
+    font-family:"Public Sans", system-ui, sans-serif;
+    font-size:16px;
+    line-height:1.55;
+    -webkit-font-smoothing:antialiased;
+    overflow-x:hidden;
+  }
+  a{color:inherit}
+  .wrap{max-width:var(--max); margin-inline:auto; padding-inline:var(--pad)}
+  h1,h2,h3{font-family:"Fraunces", Georgia, serif; font-weight:600; letter-spacing:-0.01em; margin:0}
+  .serif-num{font-family:"Fraunces", Georgia, serif; font-variant-numeric:oldstyle-nums;}
+
+  /* ---------- reveal-on-scroll ---------- */
+  .reveal{opacity:0; transform:translateY(18px); transition:opacity .7s cubic-bezier(.16,1,.3,1), transform .7s cubic-bezier(.16,1,.3,1);}
+  .reveal.in{opacity:1; transform:none}
+  @media (prefers-reduced-motion: reduce){
+    .reveal{opacity:1; transform:none; transition:none}
+  }
+
+  /* ---------- nav ---------- */
+  nav{
+    position:sticky; top:0; z-index:20;
+    backdrop-filter:saturate(140%) blur(10px);
+    background:color-mix(in oklab, var(--paper) 82%, transparent);
+    border-bottom:1px solid var(--line);
+  }
+  nav .row{display:flex; align-items:center; justify-content:space-between; padding-block:1rem; gap:1rem}
+  .brand{display:flex; align-items:center; gap:.55rem; font-family:"Fraunces",serif; font-weight:600; font-size:1.05rem; text-decoration:none; color:var(--ink)}
+  .brand .dot{width:.55rem; height:.55rem; border-radius:50%; background:var(--pink); flex:none}
+  .navlinks{display:flex; align-items:center; gap:1.25rem; font-size:.9rem}
+  .tag{
+    font-size:.72rem; letter-spacing:.06em; text-transform:uppercase;
+    color:var(--muted); border:1px solid var(--line); border-radius:999px;
+    padding:.25rem .6rem;
+  }
+  .icon-link{display:flex; align-items:center; color:var(--ink-soft); transition:color .2s}
+  .icon-link:hover{color:var(--pink)}
+
+  .btn{
+    display:inline-flex; align-items:center; gap:.5rem;
+    font-family:"Public Sans",sans-serif; font-weight:600; font-size:.9rem;
+    padding:.65rem 1.15rem; border-radius:999px; text-decoration:none;
+    border:1px solid transparent; cursor:pointer;
+    transition:transform .25s cubic-bezier(.16,1,.3,1), box-shadow .25s, background .25s, border-color .25s;
+  }
+  .btn:active{transform:scale(.97)}
+  .btn-primary{background:var(--pink); color:#fff8fa}
+  .btn-primary:hover{background:var(--pink-deep); box-shadow:0 8px 24px -8px color-mix(in oklab, var(--pink) 70%, transparent)}
+  .btn-ghost{border-color:var(--line); color:var(--ink)}
+  .btn-ghost:hover{border-color:var(--pink); color:var(--pink)}
+  .btn-sm{padding:.45rem .85rem; font-size:.82rem}
+
+  /* ---------- hero ---------- */
+  header.hero{padding-block:clamp(3.5rem, 9vw, 7rem) clamp(2.5rem, 6vw, 4rem); position:relative}
+  .eyebrow{
+    font-size:.78rem; letter-spacing:.12em; text-transform:uppercase;
+    color:var(--pink); font-weight:700; margin-bottom:1.1rem;
+    display:flex; align-items:center; gap:.6rem;
+  }
+  .eyebrow::before{content:""; width:1.6rem; height:1px; background:var(--pink)}
+  h1.display{
+    font-size:clamp(2.6rem, 6.4vw, 5rem);
+    line-height:.98;
+    max-width:16ch;
+    margin-bottom:1.4rem;
+  }
+  h1.display em{
+    font-style:italic; color:var(--pink); font-weight:500;
+  }
+  .lede{
+    font-size:clamp(1.05rem, 1.6vw, 1.25rem);
+    color:var(--ink-soft);
+    max-width:46ch;
+    margin-bottom:2.2rem;
+  }
+  .cta-row{display:flex; flex-wrap:wrap; gap:.9rem; align-items:center; margin-bottom:2.6rem}
+  .chips{display:flex; flex-wrap:wrap; gap:.5rem}
+  .chip{
+    font-size:.78rem; color:var(--muted); background:var(--pink-tint-2);
+    border:1px solid var(--line); padding:.35rem .7rem; border-radius:999px;
+    font-family:"Public Sans",sans-serif;
+  }
+
+  /* hero mock console */
+  .console{
+    margin-top:clamp(2.5rem, 6vw, 4rem);
+    background:var(--paper-raised);
+    border:1px solid var(--line);
+    border-radius:18px;
+    box-shadow: 0 24px 60px -30px rgba(28,17,22,.25);
+    max-width:640px;
+    overflow:hidden;
+  }
+  .console-head{
+    display:flex; align-items:center; gap:.5rem;
+    padding:.75rem 1rem; border-bottom:1px solid var(--line);
+    font-size:.78rem; color:var(--muted); font-weight:600;
+  }
+  .console-head .dots{display:flex; gap:.35rem; margin-right:.4rem}
+  .console-head .dots span{width:.5rem; height:.5rem; border-radius:50%; background:var(--line)}
+  .console-body{padding:1.1rem 1.2rem 1.3rem; font-size:.88rem}
+  .console-title{font-family:"Fraunces",serif; font-weight:600; color:var(--pink); margin-bottom:.65rem; font-size:.95rem}
+  .console-line{display:flex; gap:.55rem; padding:.2rem 0; color:var(--ink-soft)}
+  .console-line .ok{color:var(--pink); flex:none}
+  .console-line b{color:var(--ink); font-weight:600}
+  .console-line small{color:var(--muted)}
+  .console-more{color:var(--muted); font-size:.8rem; padding-top:.5rem}
+
+  .hero-grid{display:grid; grid-template-columns:1.05fr .95fr; gap:clamp(2rem,5vw,4rem); align-items:start}
+  @media (max-width:860px){ .hero-grid{grid-template-columns:1fr} .console{max-width:none} }
+
+  /* ---------- section shell ---------- */
+  section{padding-block:clamp(3rem, 7vw, 5.5rem)}
+  .section-head{max-width:52ch; margin-bottom:clamp(2rem, 5vw, 3.2rem)}
+  .kicker{
+    font-size:.78rem; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--muted); font-weight:700; margin-bottom:.75rem;
+  }
+  h2.section-title{font-size:clamp(1.8rem, 3.6vw, 2.6rem); line-height:1.05}
+
+  /* ---------- feature rows (editorial, not cards) ---------- */
+  .feature-row{
+    display:grid; grid-template-columns:auto 1fr; gap:clamp(1.2rem, 4vw, 3rem);
+    padding-block:clamp(1.6rem, 4vw, 2.4rem);
+    border-top:1px solid var(--line);
+    align-items:start;
+  }
+  .feature-row:last-child{border-bottom:1px solid var(--line)}
+  .feature-row .num{
+    font-family:"Fraunces",serif; font-weight:500; font-style:italic;
+    font-size:clamp(2.2rem, 5vw, 3.2rem); color:var(--pink-tint);
+    -webkit-text-stroke: 1.5px var(--pink);
+    line-height:1;
+  }
+  .feature-row .content{max-width:62ch}
+  .feature-row h3{font-size:clamp(1.25rem, 2.4vw, 1.6rem); margin-bottom:.6rem}
+  .feature-row p{margin:0; color:var(--ink-soft)}
+  .feature-row.flip{ text-align:right }
+  .feature-row.flip{ grid-template-columns:1fr auto }
+  .feature-row.flip .num{order:2}
+  .feature-row.flip .content{order:1; margin-left:auto}
+  @media (max-width:640px){
+    .feature-row, .feature-row.flip{grid-template-columns:auto 1fr; text-align:left}
+    .feature-row.flip .num{order:0} .feature-row.flip .content{order:0; margin-left:0}
+  }
+
+  /* ---------- how it works ---------- */
+  .steps{
+    display:grid; grid-template-columns:repeat(3,1fr); gap:1px;
+    background:var(--line); border:1px solid var(--line); border-radius:16px; overflow:hidden;
+  }
+  .step{background:var(--paper-raised); padding:clamp(1.5rem,3vw,2.2rem)}
+  .step .step-no{
+    display:inline-flex; align-items:center; justify-content:center;
+    width:2rem; height:2rem; border-radius:50%; background:var(--pink-tint);
+    color:var(--pink-deep); font-weight:700; font-size:.85rem; margin-bottom:1rem;
+    font-family:"Fraunces",serif;
+  }
+  .step code{
+    display:inline-block; background:var(--pink-tint-2); border:1px solid var(--line);
+    padding:.15rem .5rem; border-radius:6px; font-size:.85em;
+  }
+  .step h3{font-size:1.1rem; margin-bottom:.5rem}
+  .step p{margin:0; color:var(--muted); font-size:.92rem}
+  @media (max-width:760px){ .steps{grid-template-columns:1fr} }
+
+  /* ---------- commands ---------- */
+  .cmd-groups{display:grid; grid-template-columns:repeat(auto-fit, minmax(230px,1fr)); gap:clamp(1.5rem,4vw,2.5rem)}
+  .cmd-group h4{
+    font-family:"Public Sans",sans-serif; font-size:.76rem; letter-spacing:.09em; text-transform:uppercase;
+    color:var(--pink); font-weight:700; margin:0 0 1rem;
+  }
+  .cmd-list{list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:.55rem}
+  .cmd-list code{
+    font-family:ui-monospace, "SF Mono", Menlo, monospace; font-size:.85rem;
+    background:var(--pink-tint-2); border:1px solid var(--line);
+    padding:.2rem .5rem; border-radius:6px; color:var(--ink);
+  }
+  .cmd-list span.desc{display:block; color:var(--muted); font-size:.85rem; margin-top:.2rem}
+
+  .more-link{
+    display:inline-flex; align-items:center; gap:.4rem; margin-top:2.2rem;
+    font-weight:600; color:var(--pink); text-decoration:none; font-size:.95rem;
+  }
+  .more-link svg{transition:transform .2s}
+  .more-link:hover svg{transform:translateX(3px)}
+
+  /* ---------- security strip ---------- */
+  .strip{
+    background:var(--pink-tint-2); border-top:1px solid var(--line); border-bottom:1px solid var(--line);
+  }
+  .strip .wrap{
+    display:grid; grid-template-columns:1.1fr 1fr; gap:clamp(2rem,5vw,4rem); align-items:center;
+    padding-block:clamp(2.5rem,6vw,4rem);
+  }
+  .strip h2{font-size:clamp(1.6rem,3vw,2.2rem); margin-bottom:.9rem}
+  .strip p{color:var(--ink-soft); max-width:48ch; margin:0 0 .8rem}
+  .strip ul{margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:.7rem}
+  .strip li{display:flex; gap:.6rem; align-items:baseline; color:var(--ink-soft); font-size:.95rem}
+  .strip li::before{content:"—"; color:var(--pink); flex:none}
+  @media (max-width:760px){ .strip .wrap{grid-template-columns:1fr} }
+
+  /* ---------- security ---------- */
+  .sec-grid{
+    display:grid; grid-template-columns:repeat(2,1fr);
+    gap:1px; background:var(--line);
+    border:1px solid var(--line); border-radius:16px; overflow:hidden;
+  }
+  @media (max-width:760px){ .sec-grid{grid-template-columns:1fr} }
+  .sec-item{background:var(--paper-raised); padding:clamp(1.5rem,3vw,2.1rem)}
+  .sec-item h3{font-size:1.1rem; margin-bottom:.6rem}
+  .sec-item p{margin:0; color:var(--muted); font-size:.93rem; line-height:1.6}
+  .sec-item code{
+    font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:.85em;
+    background:var(--pink-tint-2); border:1px solid var(--line);
+    padding:.1rem .4rem; border-radius:5px; color:var(--ink);
+  }
+  .sec-item em{color:var(--ink-soft); font-style:italic}
+  .sec-item:last-child h3{color:var(--pink)}
+
+  /* ---------- self hosting ---------- */
+  .host-grid{display:grid; grid-template-columns:1.15fr .85fr; gap:clamp(2rem,5vw,3.5rem); align-items:start}
+  @media (max-width:820px){ .host-grid{grid-template-columns:1fr} }
+  .host-lede{color:var(--ink-soft); max-width:52ch; margin:0 0 1.1rem}
+  .host-lede code, .host-steps code{
+    font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:.85em;
+    background:var(--pink-tint-2); border:1px solid var(--line);
+    padding:.1rem .4rem; border-radius:5px;
+  }
+  .host-card{
+    background:var(--paper-raised); border:1px solid var(--line);
+    border-radius:16px; padding:clamp(1.4rem,3vw,2rem); box-shadow:var(--shadow);
+  }
+  .host-card-head{
+    font-size:.76rem; letter-spacing:.09em; text-transform:uppercase;
+    color:var(--pink); font-weight:700; margin-bottom:1.1rem;
+  }
+  .host-list{list-style:none; margin:0 0 1.4rem; padding:0; display:flex; flex-direction:column; gap:.85rem}
+  .host-list li{color:var(--muted); font-size:.93rem; line-height:1.45}
+  .host-list b{color:var(--ink); font-weight:600; display:block}
+  .host-steps{
+    border-top:1px solid var(--line); padding-top:1.1rem;
+    font-size:.85rem; color:var(--muted); line-height:1.9;
+  }
+
+  /* ---------- final cta ---------- */
+  .final-cta{text-align:left; padding-block:clamp(4rem,9vw,7rem)}
+  .final-cta h2{font-size:clamp(2rem,5vw,3.4rem); max-width:18ch; margin-bottom:1.4rem}
+  .final-cta .cta-row{margin-bottom:0}
+
+  /* ---------- footer ---------- */
+  footer{border-top:1px solid var(--line); padding-block:2.5rem}
+  footer .wrap{display:flex; flex-wrap:wrap; justify-content:space-between; gap:1.2rem; align-items:center}
+  footer .left{display:flex; flex-direction:column; gap:.3rem}
+  footer .brand-line{font-family:"Fraunces",serif; font-weight:600}
+  footer .muted{color:var(--muted); font-size:.85rem}
+  footer .links{display:flex; gap:1.4rem; font-size:.88rem}
+  footer .links a{text-decoration:none; color:var(--ink-soft)}
+  footer .links a:hover{color:var(--pink)}
+  .disclaimer{
+    max-width:var(--max); margin:0 auto; padding:0 var(--pad) 2rem;
+    font-size:.78rem; color:var(--muted); line-height:1.6;
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap row">
+    <a class="brand" href="#top"><span class="dot"></span>Chula Attendance</a>
+    <div class="navlinks">
+      <span class="tag">v2.0.0</span>
+      <a class="icon-link" href="https://github.com/ILFforever/Chula_Attendance" aria-label="GitHub repository" target="_blank" rel="noopener">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.73.5.5 5.74.5 12.02c0 5.02 3.26 9.28 7.78 10.79.57.1.78-.25.78-.55v-2.1c-3.17.69-3.84-1.36-3.84-1.36-.52-1.3-1.27-1.65-1.27-1.65-1.04-.71.08-.7.08-.7 1.15.08 1.75 1.18 1.75 1.18 1.02 1.75 2.68 1.24 3.34.95.1-.74.4-1.24.72-1.53-2.53-.29-5.19-1.27-5.19-5.63 0-1.24.44-2.26 1.17-3.06-.12-.29-.51-1.46.11-3.04 0 0 .96-.31 3.14 1.17a10.9 10.9 0 015.72 0c2.18-1.48 3.14-1.17 3.14-1.17.62 1.58.23 2.75.11 3.04.73.8 1.17 1.82 1.17 3.06 0 4.37-2.67 5.34-5.21 5.62.41.36.77 1.06.77 2.14v3.17c0 .3.21.66.79.55A10.53 10.53 0 0023.5 12c0-6.28-5.23-11.5-11.5-11.5z"/></svg>
+      </a>
+      <a class="btn btn-primary btn-sm" href="https://discord.com/oauth2/authorize?client_id=1475381396242694214&permissions=68672&scope=bot+applications.commands" target="_blank" rel="noopener">Add to Discord</a>
+    </div>
+  </div>
+</nav>
+
+<main id="top">
+
+  <header class="hero">
+    <div class="wrap hero-grid">
+      <div>
+        <p class="eyebrow reveal">Discord bot &middot; MyCourseVille &middot; Chulalongkorn University</p>
+        <h1 class="display reveal">Never miss a check&#8209;in <em>again.</em></h1>
+        <p class="lede reveal">Someone posts the attendance link. The bot logs into MyCourseVille as every registered student in the channel and checks them in — before most people have even opened the app.</p>
+        <div class="cta-row reveal">
+          <a class="btn btn-primary" href="https://discord.com/oauth2/authorize?client_id=1475381396242694214&permissions=68672&scope=bot+applications.commands" target="_blank" rel="noopener">Add to Discord →</a>
+          <a class="btn btn-ghost" href="https://github.com/ILFforever/Chula_Attendance" target="_blank" rel="noopener">View source</a>
+        </div>
+        <div class="chips reveal">
+          <span class="chip">No Selenium</span>
+          <span class="chip">Runs on 256MB RAM</span>
+          <span class="chip">Passwords encrypted at rest</span>
+          <span class="chip">Open source, MIT</span>
+        </div>
+      </div>
+
+      <div class="console reveal" aria-hidden="true">
+        <div class="console-head"><span class="dots"><span></span><span></span><span></span></span> #cpe-101-attendance</div>
+        <div class="console-body">
+          <div class="console-title">2110405 — Artificial Intelligence and Machine Learning</div>
+          <div class="console-line"><span class="ok">✅</span><span><b>John</b> — checked in at <small>10:34 AM</small></span></div>
+          <div class="console-line"><span class="ok">✅</span><span><b>Muhammad</b> — checked in at <small>10:34 AM</small></span></div>
+          <div class="console-line"><span class="ok">✅</span><span><b>Priya</b> — checked in at <small>10:34 AM</small></span></div>
+          <div class="console-line"><span class="ok">✅</span><span><b>Somchai</b> — checked in at <small>10:34 AM</small></span></div>
+          <div class="console-more">+ 15 more, 0.4s apart</div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <section id="features">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <p class="kicker">What it does</p>
+        <h2 class="section-title">One link in, everyone checked in.</h2>
+      </div>
+
+      <div class="feature-row reveal">
+        <div class="num">01</div>
+        <div class="content">
+          <h3>Automatic check-in</h3>
+          <p>The bot watches your monitored channel. The moment a real MyCourseVille attendance link appears, it logs in as every registered student and clicks through — no one has to open the app, find the link, or race a countdown timer.</p>
+        </div>
+      </div>
+
+      <div class="feature-row flip reveal">
+        <div class="num">02</div>
+        <div class="content">
+          <h3>Only your courses</h3>
+          <p><code>/enroll 2110405</code> and that's it — you'll only be checked into that course's links from then on, using the same public course code you already know from registration. No internal IDs to guess.</p>
+        </div>
+      </div>
+
+      <div class="feature-row reveal">
+        <div class="num">03</div>
+        <div class="content">
+          <h3>A fair leaderboard</h3>
+          <p><code>/leaderboard</code> tracks who's fastest to post the link. Reposting the same link or spamming stale ones doesn't inflate the score — credit only counts once, and only if a real check-in actually happened.</p>
+        </div>
+      </div>
+
+      <div class="feature-row flip reveal">
+        <div class="num">04</div>
+        <div class="content">
+          <h3>Encrypted by default</h3>
+          <p>Credentials are encrypted at rest with Fernet (AES-128 + HMAC) the moment you <code>/register</code>. Every command response about your account is visible only to you.</p>
+        </div>
+      </div>
+
+      <div class="feature-row reveal">
+        <div class="num">05</div>
+        <div class="content">
+          <h3>Built to stay light</h3>
+          <p>No headless browser, no Selenium, no Chrome process per user. Just plain HTTP requests and HTML parsing — the whole bot runs comfortably inside a 256MB container.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="how">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <p class="kicker">Getting started</p>
+        <h2 class="section-title">Three commands and you're done.</h2>
+      </div>
+      <div class="steps reveal">
+        <div class="step">
+          <span class="step-no">1</span>
+          <h3><code>/register</code></h3>
+          <p>Save your MyCourseVille login — CU Net or platform account. Encrypted immediately, visible only to you.</p>
+        </div>
+        <div class="step">
+          <span class="step-no">2</span>
+          <h3><code>/monitor</code></h3>
+          <p>Point the bot at your class channel. It'll quietly watch for attendance links from then on.</p>
+        </div>
+        <div class="step">
+          <span class="step-no">3</span>
+          <h3>Post the link</h3>
+          <p>Whoever sees it first drops it in the channel. Everyone enrolled gets checked in within seconds.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="strip">
+    <div class="wrap">
+      <div class="reveal">
+        <h2>You'll always know where you stand.</h2>
+        <p>Every check-in sends you a personal DM with your result — so you're never left guessing whether it actually worked.</p>
+        <p>And if something does go wrong, it says so in plain language instead of quietly failing.</p>
+      </div>
+      <ul class="reveal">
+        <li>Wrong password? It tells you right away, instead of failing silently every class</li>
+        <li>Not in that course? You're skipped — no false alarms</li>
+        <li>Link already expired? You'll see that, not a fake "success"</li>
+        <li>Want to test it beforehand? <code>/logincheck</code> confirms your login works</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="commands">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <p class="kicker">Reference</p>
+        <h2 class="section-title">Every command, at a glance.</h2>
+      </div>
+      <div class="cmd-groups reveal">
+        <div class="cmd-group">
+          <h4>Account</h4>
+          <ul class="cmd-list">
+            <li><code>/register</code><span class="desc">Save your MCV credentials</span></li>
+            <li><code>/unregister</code><span class="desc">Remove them</span></li>
+            <li><code>/logincheck</code><span class="desc">Test that login works</span></li>
+          </ul>
+        </div>
+        <div class="cmd-group">
+          <h4>Courses</h4>
+          <ul class="cmd-list">
+            <li><code>/enroll</code><span class="desc">Filter check-ins to one course</span></li>
+            <li><code>/unenroll</code><span class="desc">Remove a course</span></li>
+            <li><code>/subjects</code><span class="desc">List your enrolled courses</span></li>
+          </ul>
+        </div>
+        <div class="cmd-group">
+          <h4>Channels</h4>
+          <ul class="cmd-list">
+            <li><code>/monitor</code><span class="desc">Watch a channel</span></li>
+            <li><code>/unmonitor</code><span class="desc">Stop watching</span></li>
+            <li><code>/channels</code><span class="desc">List watched channels</span></li>
+          </ul>
+        </div>
+        <div class="cmd-group">
+          <h4>Attendance</h4>
+          <ul class="cmd-list">
+            <li><code>/checkin</code><span class="desc">Trigger manually</span></li>
+            <li><code>/leaderboard</code><span class="desc">Who posts the most links</span></li>
+            <li><code>/status</code><span class="desc">Uptime &amp; bot info</span></li>
+          </ul>
+        </div>
+      </div>
+      <a class="more-link reveal" href="https://github.com/ILFforever/Chula_Attendance#commands" target="_blank" rel="noopener">
+        Full command reference on GitHub
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+      </a>
+    </div>
+  </section>
+
+  <section id="security">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <p class="kicker">Your credentials</p>
+        <h2 class="section-title">How your password is handled.</h2>
+      </div>
+
+      <div class="sec-grid">
+        <div class="sec-item reveal">
+          <h3>Encrypted the moment you send it</h3>
+          <p>Your password is encrypted with Fernet (AES-128 with an HMAC signature) before it ever touches disk. It's never written down in plain text, and the <code>/register</code> response is visible only to you — nobody else in the server sees it.</p>
+        </div>
+        <div class="sec-item reveal">
+          <h3>The key is kept apart from the data</h3>
+          <p>Encrypted credentials live on the server's storage volume; the key that unlocks them is held separately as a hosting secret. Someone who got hold of the data file alone would find it useless.</p>
+        </div>
+        <div class="sec-item reveal">
+          <h3>Used for one thing only</h3>
+          <p>Your login is used to sign into MyCourseVille and mark you present — nothing else. No analytics, no third parties, no other sites. The entire source is public, so you don't have to take that on faith.</p>
+        </div>
+        <div class="sec-item reveal">
+          <h3>The honest limit</h3>
+          <p>The bot itself never displays, logs, or exports a stored password. But whoever operates the server can reach both the stored data and the key that unlocks it — that's unavoidable for <em>any</em> bot that signs in on your behalf, this one included. Using it means trusting the person running it. If you'd rather not, run your own copy — then that person is you.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="selfhost">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <p class="kicker">Run your own</p>
+        <h2 class="section-title">Want your own private instance?</h2>
+      </div>
+
+      <div class="host-grid">
+        <div class="reveal">
+          <p class="host-lede">The public bot is a <b>single shared instance</b>. Everyone who adds it shares one pool of registered users and one global leaderboard — so <code>/users</code> and <code>/leaderboard</code> show people from other servers too, and a link posted anywhere checks in everyone registered for that course.</p>
+          <p class="host-lede">For most class group chats that's fine. If you'd rather keep your members and rankings to yourselves, run your own copy — it's the same code, and you hold the only key to your own data.</p>
+          <a class="more-link" href="https://github.com/ILFforever/Chula_Attendance/blob/main/DEPLOYMENT.md" target="_blank" rel="noopener">
+            Full deployment guide
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+          </a>
+        </div>
+
+        <div class="host-card reveal">
+          <div class="host-card-head">Your own instance gets</div>
+          <ul class="host-list">
+            <li><b>Its own leaderboard</b> — only your server's members</li>
+            <li><b>Its own user list</b> — nobody outside sees who registered</li>
+            <li><b>Your own encryption key</b> — passwords readable only by you</li>
+            <li><b>Free hosting</b> — fits in a 256&nbsp;MB container on Fly.io</li>
+          </ul>
+          <div class="host-steps">
+            <span>Clone → set <code>DISCORD_TOKEN</code> + <code>ENCRYPTION_KEY</code> → <code>fly deploy</code></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="final-cta">
+    <div class="wrap">
+      <p class="kicker reveal">Ready when you are</p>
+      <h2 class="reveal">Add it to your class server before the next lecture.</h2>
+      <div class="cta-row reveal">
+        <a class="btn btn-primary" href="https://discord.com/oauth2/authorize?client_id=1475381396242694214&permissions=68672&scope=bot+applications.commands" target="_blank" rel="noopener">Add to Discord →</a>
+        <a class="btn btn-ghost" href="https://github.com/ILFforever/Chula_Attendance" target="_blank" rel="noopener">Read the source</a>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="left">
+      <span class="brand-line">Chula Attendance</span>
+      <span class="muted">Built by Tanabodhi Mukura (@ILFforever) · MIT License</span>
+    </div>
+    <div class="links">
+      <a href="https://github.com/ILFforever/Chula_Attendance" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/ILFforever/Chula_Attendance/blob/main/README.md" target="_blank" rel="noopener">Documentation</a>
+      <a href="https://github.com/ILFforever/Chula_Attendance/issues" target="_blank" rel="noopener">Report an issue</a>
+    </div>
+  </div>
+</footer>
+<p class="disclaimer">Chula Attendance is an independent, student-built tool and is not officially affiliated with or endorsed by Chulalongkorn University or MyCourseVille. Use it in line with your course's attendance policy.</p>
+
+<script>
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach((e) => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, { threshold: 0.12, rootMargin: '0px 0px -40px 0px' });
+  document.querySelectorAll('.reveal').forEach((el) => io.observe(el));
+</script>
+
+</body>
+</html>

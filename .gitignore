@@ -53,6 +53,7 @@ desktop.ini
 *.sqlite3
 users.json
 config.json
+leaderboard.json
 
 
 # Claude Code

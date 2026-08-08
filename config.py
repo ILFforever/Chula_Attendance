@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+from datetime import datetime, timezone, timedelta
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -23,10 +24,18 @@ log.setLevel(logging.DEBUG)
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
+BOT_VERSION = "2.0.0"
+
 DATA_DIR = os.environ.get("DATA_DIR", ".")
 CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
 USERS_FILE = os.path.join(DATA_DIR, "users.json")
+LEADERBOARD_FILE = os.path.join(DATA_DIR, "leaderboard.json")
 DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN", "")
+
+# How long a posted link is remembered for duplicate detection. Attendance
+# codes are valid for at most a day, so anything older than this can never
+# be a "real" duplicate — safe to forget it and keep the file tiny forever.
+SEEN_LINK_TTL = timedelta(hours=48)
 
 
 def load_json(path: str) -> dict:
@@ -53,6 +62,13 @@ if _raw:
 # Registered users — persisted in users.json
 # Format: { "discord_user_id": { "username": "...", "password": "...", "display_name": "..." } }
 registered_users: dict[str, dict] = load_json(USERS_FILE)
+
+# Leaderboard — persisted in leaderboard.json
+# "counts": { "discord_user_id": { "display_name": "...", "count": N } }
+# "seen_links": { "attendance_url": "iso_timestamp_first_seen" } — dedup cache
+_leaderboard_data = load_json(LEADERBOARD_FILE)
+leaderboard_counts: dict[str, dict] = _leaderboard_data.get("counts", {})
+seen_links: dict[str, str] = _leaderboard_data.get("seen_links", {})
 
 
 # ---------------------------------------------------------------------------
@@ -84,3 +100,48 @@ def persist_channels():
 
 def persist_users():
     save_json(USERS_FILE, registered_users)
+
+
+def persist_leaderboard():
+    save_json(LEADERBOARD_FILE, {"counts": leaderboard_counts, "seen_links": seen_links})
+
+
+# ---------------------------------------------------------------------------
+# Leaderboard / duplicate-link helpers
+# ---------------------------------------------------------------------------
+def prune_seen_links():
+    """Drop dedup entries older than SEEN_LINK_TTL so the file never grows unbounded."""
+    cutoff = datetime.now(timezone.utc) - SEEN_LINK_TTL
+    stale = [
+        url for url, ts in seen_links.items()
+        if _parse_iso(ts) is None or _parse_iso(ts) < cutoff
+    ]
+    for url in stale:
+        del seen_links[url]
+    if stale:
+        persist_leaderboard()
+
+
+def _parse_iso(ts: str):
+    try:
+        return datetime.fromisoformat(ts)
+    except (ValueError, TypeError):
+        return None
+
+
+def is_duplicate_link(url: str) -> bool:
+    """True if this exact attendance URL has already been processed recently."""
+    prune_seen_links()
+    return url in seen_links
+
+
+def mark_link_seen(url: str):
+    seen_links[url] = datetime.now(timezone.utc).isoformat()
+    persist_leaderboard()
+
+
+def record_leaderboard_post(uid: str, display_name: str):
+    entry = leaderboard_counts.setdefault(uid, {"display_name": display_name, "count": 0})
+    entry["display_name"] = display_name
+    entry["count"] += 1
+    persist_leaderboard()

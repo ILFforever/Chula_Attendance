@@ -19,6 +19,10 @@ MCV_URL_PATTERN = re.compile(
 MCV_URL_PARTIAL = re.compile(
     r"https?://(?:www\.)?mycourseville\.com/\?q=courseville/course/\d+/attendance[^\s]*"
 )
+# Course ID embedded in any course/attendance URL
+MCV_COURSE_ID_PATTERN = re.compile(
+    r"mycourseville\.com/\?q=courseville/course/(\d+)/attendance"
+)
 
 
 def extract_attendance_url(text: str) -> str | None:
@@ -27,6 +31,67 @@ def extract_attendance_url(text: str) -> str | None:
     if match:
         return match.group(0)
     return None
+
+
+def extract_course_id(text: str) -> str | None:
+    """Extract MyCourseVille's internal course ID (cvcid) from a URL or raw text.
+
+    NOTE: this is MCV's own internal ID (e.g. 75974), NOT the public course
+    code students know (e.g. 2110405) — the two are unrelated numbering
+    schemes. For matching against user-facing course codes, use
+    extract_public_course_code() instead.
+    """
+    match = MCV_COURSE_ID_PATTERN.search(text)
+    if match:
+        return match.group(1)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Public course metadata (no login required)
+# ---------------------------------------------------------------------------
+# MCV serves OpenGraph metadata on course/attendance pages without auth (this
+# is how Discord/Slack link previews show a course name). The og:title looks
+# like "2110405 (2025/2) Artificial Intelligence and Machine Learning
+# [Section 50 - 54]" — the leading number is the public course code.
+_OG_TITLE_PATTERN = re.compile(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']', re.IGNORECASE)
+_COURSE_CODE_FROM_TITLE = re.compile(r"^(\d+)")
+
+
+def fetch_public_course_info(url: str) -> dict | None:
+    """Fetch the publicly-visible course code/title for an MCV URL (no login needed).
+
+    Returns {"code", "title"} or None if unreachable / no course metadata found.
+    """
+    try:
+        resp = http_requests.get(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"},
+            timeout=10,
+        )
+    except http_requests.RequestException as exc:
+        log.warning("Public course-info fetch failed for %s: %s", url, exc)
+        return None
+
+    if resp.status_code != 200:
+        return None
+
+    match = _OG_TITLE_PATTERN.search(resp.text)
+    if not match:
+        return None
+
+    title = match.group(1)
+    code_match = _COURSE_CODE_FROM_TITLE.match(title)
+    if not code_match:
+        return None
+
+    return {"code": code_match.group(1), "title": title}
+
+
+def extract_public_course_code(url: str) -> str | None:
+    """Fetch and return just the public course code for an MCV URL, or None."""
+    info = fetch_public_course_info(url)
+    return info["code"] if info else None
 
 
 # ---------------------------------------------------------------------------
@@ -286,8 +351,12 @@ class AttendanceLogger:
             session.close()
             log.info("Check-in END: %s", name)
 
-    def check_in_all(self, attendance_url: str) -> list[tuple[str, str]]:
+    def check_in_all(self, attendance_url: str, course_id: str | None = None) -> list[tuple[str, str]]:
         """Check in every registered user for a given attendance URL.
+
+        If *course_id* is given, users who have a non-empty "subjects" enrollment
+        list are only checked in when that list contains *course_id*. Users with
+        no subjects set are checked in regardless (backwards-compatible default).
 
         Returns a list of (discord_user_id, result_message) tuples.
         """
@@ -295,7 +364,13 @@ class AttendanceLogger:
             return [("", "No users registered. Use `/register` to add users.")]
 
         results = []
+        matched_any = False
         for uid, info in registered_users.items():
+            subjects = info.get("subjects") or []
+            if subjects and course_id and course_id not in subjects:
+                continue
+            matched_any = True
+
             display_name = info.get("display_name", info["username"])
             encrypted_password = info["password"]
 
@@ -309,6 +384,11 @@ class AttendanceLogger:
             login_method = info.get("login_method", "cu_net")
             result = self.check_in(attendance_url, info["username"], password, display_name, login_method=login_method)
             results.append((uid, result))
+
+        if not matched_any:
+            course_label = f"`{course_id}`" if course_id else "this course"
+            return [("", f"No registered users are enrolled in {course_label}. Use `/enroll {course_id or '<course_id>'}` to opt in.")]
+
         return results
 
     def cleanup(self):

@@ -7,17 +7,33 @@ import requests as http_requests
 
 from config import (
     log,
+    BOT_VERSION,
     registered_users,
     monitored_channels,
     persist_channels,
     persist_users,
+    leaderboard_counts,
 )
 from password_crypto import encrypt_password, decrypt_password
 from attendance import (
     MCV_URL_PATTERN,
     WrongCredentialsError,
     LoginError,
+    fetch_public_course_info,
 )
+from cugetreg import fetch_course_name
+
+
+def _parse_course_id(raw: str) -> str | None:
+    """Accept either a raw public course code (e.g. 2110405) or a MyCourseVille
+    URL, in which case the public course code is fetched from its metadata."""
+    raw = raw.strip()
+    if raw.isdigit():
+        return raw
+    if MCV_URL_PATTERN.search(raw):
+        info = fetch_public_course_info(raw)
+        return info["code"] if info else None
+    return None
 
 
 def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, executor, bot_start_time):
@@ -26,16 +42,17 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
     # -------------------------------------------------------------------
     # Helper: run check-in in thread pool
     # -------------------------------------------------------------------
-    async def run_check_in_async(attendance_url: str) -> list[tuple[str, str]]:
-        return await bot.loop.run_in_executor(executor, attendance.check_in_all, attendance_url)
+    async def run_check_in_async(attendance_url: str, course_id: str | None = None) -> list[tuple[str, str]]:
+        return await bot.loop.run_in_executor(executor, attendance.check_in_all, attendance_url, course_id)
 
-    async def dm_results(results: list[tuple[str, str]]):
+    async def dm_results(results: list[tuple[str, str]], course_title: str | None = None):
+        header = f"📋 **Attendance result — {course_title}**\n" if course_title else "📋 **Attendance result:**\n"
         for uid, result in results:
             if not uid:
                 continue
             try:
                 user = await bot.fetch_user(int(uid))
-                await user.send(f"📋 **Attendance result:**\n{result}")
+                await user.send(f"{header}{result}")
             except Exception as e:
                 log.warning("Could not DM user %s: %s", uid, e)
 
@@ -129,17 +146,155 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
         )
 
     # -------------------------------------------------------------------
+    # Subject / Course Enrollment
+    # -------------------------------------------------------------------
+    @tree.command(name="enroll", description="Enroll in a course so you're only checked in for its attendance links")
+    @app_commands.describe(course_id="Your course code (e.g. 2110405, from CU Get Reg / your registration), or paste an MCV link")
+    async def cmd_enroll(interaction: discord.Interaction, course_id: str):
+        uid = str(interaction.user.id)
+        if uid not in registered_users:
+            await interaction.response.send_message(
+                "❌ You need to `/register` first.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        parsed = await bot.loop.run_in_executor(executor, _parse_course_id, course_id)
+        if not parsed:
+            await interaction.followup.send(
+                "❌ Couldn't find a course code. Enter the course code (e.g. `2110405`) or paste an MCV course/attendance link.",
+                ephemeral=True,
+            )
+            return
+
+        subjects = registered_users[uid].setdefault("subjects", [])
+        if parsed in subjects:
+            await interaction.followup.send(
+                f"ℹ️ You're already enrolled in course `{parsed}`.", ephemeral=True
+            )
+            return
+
+        course_info = await bot.loop.run_in_executor(executor, fetch_course_name, parsed)
+
+        subjects.append(parsed)
+        persist_users()
+        log.info("User %s enrolled in course %s", interaction.user.display_name, parsed)
+
+        if course_info:
+            header = f"✅ Enrolled in `{parsed}` — **{course_info['name_short']}**"
+            details = f"> {course_info['name_th']}\n> {course_info['name_en']}\n\n"
+        else:
+            header = f"✅ Enrolled in `{parsed}`"
+            details = (
+                "⚠️ _Couldn't verify this code on CU Get Reg — that's normal for a course from a past "
+                "term, but if you mistyped the code, check-in matching happens silently against real "
+                "attendance links, so you won't be notified of a typo until you're simply not checked in. "
+                "Double check `/subjects` shows the code you meant._\n\n"
+            )
+
+        await interaction.followup.send(
+            f"{header}\n{details}"
+            "You'll now only be checked in for attendance links from this course (and any others you enroll in). "
+            "Use `/subjects` to view your list, `/unenroll` to remove one.",
+            ephemeral=True,
+        )
+
+    @tree.command(name="unenroll", description="Remove a course from your enrollment list")
+    @app_commands.describe(course_id="Course code to remove, exactly as you entered it with /enroll")
+    async def cmd_unenroll(interaction: discord.Interaction, course_id: str):
+        uid = str(interaction.user.id)
+        if uid not in registered_users:
+            await interaction.response.send_message(
+                "❌ You are not registered.", ephemeral=True
+            )
+            return
+
+        parsed = course_id.strip()
+        subjects = registered_users[uid].get("subjects", [])
+        if parsed not in subjects:
+            await interaction.response.send_message(
+                f"ℹ️ You're not enrolled in course `{parsed}`. Use `/subjects` to see your current list.",
+                ephemeral=True,
+            )
+            return
+
+        subjects.remove(parsed)
+        persist_users()
+        log.info("User %s unenrolled from course %s", interaction.user.display_name, parsed)
+
+        message = f"🛑 Unenrolled from course `{parsed}`."
+        if not subjects:
+            message += "\n\nYou have no courses enrolled anymore, so you'll be checked in for **all** attendance links again."
+        await interaction.response.send_message(message, ephemeral=True)
+
+    @tree.command(name="unenrollall", description="Remove every course from your enrollment list")
+    async def cmd_unenrollall(interaction: discord.Interaction):
+        uid = str(interaction.user.id)
+        if uid not in registered_users:
+            await interaction.response.send_message(
+                "❌ You are not registered.", ephemeral=True
+            )
+            return
+
+        subjects = registered_users[uid].get("subjects", [])
+        if not subjects:
+            await interaction.response.send_message(
+                "ℹ️ You have no courses enrolled already.", ephemeral=True
+            )
+            return
+
+        count = len(subjects)
+        registered_users[uid]["subjects"] = []
+        persist_users()
+        log.info("User %s unenrolled from all %d course(s)", interaction.user.display_name, count)
+        await interaction.response.send_message(
+            f"🛑 Unenrolled from all {count} course(s). You'll be checked in for **all** attendance links again.",
+            ephemeral=True,
+        )
+
+    @tree.command(name="subjects", description="List the courses you're enrolled in for check-in filtering")
+    async def cmd_subjects(interaction: discord.Interaction):
+        uid = str(interaction.user.id)
+        if uid not in registered_users:
+            await interaction.response.send_message(
+                "❌ You are not registered.", ephemeral=True
+            )
+            return
+
+        subjects = registered_users[uid].get("subjects", [])
+        if not subjects:
+            await interaction.response.send_message(
+                "📚 You have no courses enrolled — you'll be checked in for **all** attendance links.\n"
+                "Use `/enroll <course_code>` to restrict check-ins to specific courses.",
+                ephemeral=True,
+            )
+            return
+
+        lines = "\n".join(f"• `{c}`" for c in subjects)
+        await interaction.response.send_message(
+            f"📚 **Your enrolled courses ({len(subjects)}):**\n{lines}\n\n"
+            "Use `/enroll` to add another, `/unenroll` to remove one, or `/unenrollall` to clear the whole list.",
+            ephemeral=True,
+        )
+
+    # -------------------------------------------------------------------
     # Help
     # -------------------------------------------------------------------
     @tree.command(name="help", description="Show all bot commands and how to use them")
     async def cmd_help(interaction: discord.Interaction):
         await interaction.response.send_message(
-            "📖 **Attendance Bot — Help**\n"
+            f"📖 **Attendance Bot — Help** (v{BOT_VERSION})\n"
             "\n"
             "**User Management**\n"
             "`/register <username> <password>` — Register your MyCourseVille credentials (only you see the response)\n"
             "`/unregister` — Remove your saved credentials\n"
             "`/users` — List all registered users\n"
+            "\n"
+            "**Course Enrollment**\n"
+            "`/enroll <course_code>` — Only get checked in for this course's links (e.g. `2110405`)\n"
+            "`/unenroll <course_code>` — Remove a course from your enrollment list\n"
+            "`/unenrollall` — Remove every course from your enrollment list\n"
+            "`/subjects` — List the courses you're enrolled in\n"
             "\n"
             "**Channel Management**\n"
             "`/monitor [channel]` — Start monitoring a channel for attendance links\n"
@@ -150,10 +305,12 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
             "`/checkin <url>` — Manually trigger check-in with a MyCourseVille attendance URL\n"
             "`/logincheck` — Test if your saved credentials can log in\n"
             "`/status` — Show bot uptime, registered users, and monitored channels\n"
+            "`/leaderboard` — See who's posted the most attendance links\n"
             "\n"
             "**How it works**\n"
             "When a MyCourseVille attendance link is posted in a monitored channel, "
-            "the bot automatically opens it for every registered user and checks them in.",
+            "the bot automatically opens it and checks in every registered user — or, if you've "
+            "used `/enroll`, only those enrolled in that course.",
             ephemeral=True,
         )
 
@@ -226,13 +383,18 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
                 )
             return
 
-        log.info("Manual check-in triggered by %s with URL: %s", interaction.user, url)
-        await interaction.response.send_message(
-            f"⏳ Checking in {len(registered_users)} user(s) …"
+        await interaction.response.defer()
+        course_info = await bot.loop.run_in_executor(executor, fetch_public_course_info, url)
+        course_id = course_info["code"] if course_info else None
+        course_label = f"`{course_id}`" if course_id else "(unknown course)"
+        log.info("Manual check-in triggered by %s with URL: %s (course %s)", interaction.user, url, course_id)
+        await interaction.followup.send(
+            f"⏳ Checking in registered user(s) for course {course_label} …"
         )
-        results = await run_check_in_async(url)
-        await interaction.followup.send("\n".join(r for _, r in results))
-        await dm_results(results)
+        results = await run_check_in_async(url, course_id)
+        results_header = f"📋 **{course_info['title']}**\n" if course_info else "📋 **Attendance Check-in**\n"
+        await interaction.followup.send(results_header + "\n".join(r for _, r in results))
+        await dm_results(results, course_info["title"] if course_info else None)
 
     @tree.command(name="logincheck", description="Test if your saved credentials can log in")
     async def cmd_logincheck(interaction: discord.Interaction):
@@ -307,13 +469,43 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
 
         channel_list = ", ".join(f"<#{cid}>" for cid in sorted(monitored_channels)) or "None"
         user_count = len(registered_users)
+        enrolled_count = sum(1 for info in registered_users.values() if info.get("subjects"))
         await interaction.response.send_message(
             f"🤖 **Bot Status**\n"
+            f"• Version: v{BOT_VERSION}\n"
             f"• Uptime: {hours}h {minutes}m {seconds}s\n"
             f"• Engine: HTTP requests (lightweight)\n"
-            f"• Registered users: {user_count}\n"
-            f"• Monitoring: {channel_list}",
+            f"• Registered users: {user_count} ({enrolled_count} using course enrollment)\n"
+            f"• Monitoring: {channel_list}\n"
+            "\n"
+            "🛠️ Made by **Tanabodhi Mukura** (@ILFforever)\n"
+            "🔗 <https://github.com/ILFforever/Chula_Attendance>",
             ephemeral=True,
+        )
+
+    @tree.command(name="leaderboard", description="See who's posted the most attendance links")
+    async def cmd_leaderboard(interaction: discord.Interaction):
+        if not leaderboard_counts:
+            await interaction.response.send_message(
+                "🏆 No one's posted an attendance link yet — be the first!", ephemeral=True
+            )
+            return
+
+        ranked = sorted(leaderboard_counts.items(), key=lambda kv: kv[1]["count"], reverse=True)
+        medals = ["🥇", "🥈", "🥉"]
+        lines = []
+        for i, (uid, entry) in enumerate(ranked[:10]):
+            rank = medals[i] if i < len(medals) else f"`#{i + 1}`"
+            lines.append(f"{rank} **{entry['display_name']}** — {entry['count']} link(s)")
+
+        uid = str(interaction.user.id)
+        if uid not in dict(ranked[:10]) and uid in leaderboard_counts:
+            own_rank = next(i for i, (u, _) in enumerate(ranked) if u == uid) + 1
+            own_entry = leaderboard_counts[uid]
+            lines.append(f"...\n`#{own_rank}` **{own_entry['display_name']}** (you) — {own_entry['count']} link(s)")
+
+        await interaction.response.send_message(
+            "🏆 **Attendance Link Leaderboard**\n" + "\n".join(lines)
         )
 
     # Return helpers so bot.py can use them for on_message
