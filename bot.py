@@ -1,3 +1,5 @@
+import asyncio
+import time
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 
@@ -47,6 +49,18 @@ attendance = AttendanceLogger()
 bot_start_time = datetime.now(timezone.utc)
 executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="checkin_")
 
+# asyncio only holds a weak reference to a running task, so a fire-and-forget
+# task can be garbage-collected mid-flight. Parking them here keeps them alive
+# until they finish.
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn(coro) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
 # Register all slash commands and get helpers back
 run_check_in_async, dm_results = commands.setup(bot, tree, attendance, executor, bot_start_time)
 
@@ -59,6 +73,7 @@ async def process_attendance_link(attendance_url: str, channel, note: str = "") 
 
     Returns a summary suitable for handing back to the scanner page.
     """
+    started = time.perf_counter()
     is_dupe = is_duplicate_link(attendance_url)
     if is_dupe:
         log.info("Duplicate attendance link, re-checking in without leaderboard credit: %s", attendance_url)
@@ -75,16 +90,24 @@ async def process_attendance_link(attendance_url: str, channel, note: str = "") 
         f"⏳ {note}Detected {course_label}! Checking in {enrolled_count} user(s) …"
     )
 
+    check_in_started = time.perf_counter()
     results = await run_check_in_async(attendance_url, course_id)
+    log.info("Checked in %d user(s) in %.1fs", len(results), time.perf_counter() - check_in_started)
+
     results_header = f"📋 **{course_info['title']}**\n" if course_info else "📋 **Attendance Check-in**\n"
     if is_dupe:
         results_header += "_(this link was already posted before — no leaderboard credit for this post)_\n"
     await status_msg.edit(content=results_header + "\n".join(r for _, r in results))
-    await dm_results(results, course_info["title"] if course_info else None)
+
+    # Fire-and-forget: the results are already in the channel, and nothing below
+    # depends on the DMs landing. Awaiting them here is what made the QR scanner
+    # hang for ~20s — its HTTP response was blocked behind the whole DM run.
+    _spawn(dm_results(results, course_info["title"] if course_info else None))
 
     mark_link_seen(attendance_url)
 
     succeeded = sum(1 for _, r in results if "✅" in r)
+    log.info("Attendance link fully handled in %.1fs (%d/%d ok)", time.perf_counter() - started, succeeded, len(results))
     return {
         "course": course_info["title"] if course_info else None,
         "attempted": len(results),

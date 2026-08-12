@@ -1,5 +1,7 @@
+import asyncio
 import enum
 import re
+import time
 
 import discord
 from discord import app_commands
@@ -38,6 +40,11 @@ def _parse_course_id(raw: str) -> str | None:
     return None
 
 
+# How many result DMs to have in flight at once. Discord rate-limits DM channel
+# creation per-bucket, so this is about overlapping latency, not brute force.
+DM_CONCURRENCY = 8
+
+
 def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, executor, bot_start_time):
     """Register all slash commands on the given tree."""
 
@@ -48,15 +55,32 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
         return await bot.loop.run_in_executor(executor, attendance.check_in_all, attendance_url, course_id)
 
     async def dm_results(results: list[tuple[str, str]], course_title: str | None = None):
+        """DM each user their own result.
+
+        Sent concurrently — one DM per user is 2-3 REST calls, and walking a
+        class-sized roster serially took ~1s per user (20s for 18 people), which
+        is why the QR scanner used to sit there spinning. The semaphore keeps us
+        from opening the floodgates on Discord's DM-channel rate limit.
+        """
         header = f"📋 **Attendance result — {course_title}**\n" if course_title else "📋 **Attendance result:**\n"
-        for uid, result in results:
-            if not uid:
-                continue
-            try:
-                user = await bot.fetch_user(int(uid))
-                await user.send(f"{header}{result}")
-            except Exception as e:
-                log.warning("Could not DM user %s: %s", uid, e)
+        recipients = [(uid, result) for uid, result in results if uid]
+        if not recipients:
+            return
+
+        sem = asyncio.Semaphore(DM_CONCURRENCY)
+
+        async def send_one(uid: str, result: str):
+            async with sem:
+                try:
+                    # get_user is a cache hit; fetch_user costs a REST round trip.
+                    user = bot.get_user(int(uid)) or await bot.fetch_user(int(uid))
+                    await user.send(f"{header}{result}")
+                except Exception as e:
+                    log.warning("Could not DM user %s: %s", uid, e)
+
+        started = time.perf_counter()
+        await asyncio.gather(*(send_one(uid, result) for uid, result in recipients))
+        log.info("DMed %d user(s) in %.1fs", len(recipients), time.perf_counter() - started)
 
     # -------------------------------------------------------------------
     # User Management
