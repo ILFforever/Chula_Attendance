@@ -348,7 +348,13 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
             "**How it works**\n"
             "When a MyCourseVille attendance link is posted in a monitored channel, "
             "the bot automatically opens it and checks in every registered user — or, if you've "
-            "used `/enroll`, only those enrolled in that course.",
+            "used `/enroll`, only those enrolled in that course.\n"
+            "\n"
+            "**ClassDeeDee (ChulaSSO)**\n"
+            "Scanning a ClassDeeDee attendance QR (via `/scanner`) checks everyone in there too. "
+            "If you registered with **CU Net** you already work on ClassDeeDee — nothing to do. "
+            "If you registered a **MyCourseVille** account, add your ChulaSSO login once with "
+            "`/deedeeregister`, then `/deedeecheck` to confirm it.",
             ephemeral=True,
         )
 

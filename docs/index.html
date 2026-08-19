@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Chula Attendance — never miss a check-in again</title>
-<meta name="description" content="A Discord bot that watches your class channel for MyCourseVille attendance links and checks everyone in automatically. Open source, encrypted, built for Chula students.">
+<meta name="description" content="A Discord bot that watches your class channel for MyCourseVille attendance links and scans ClassDeeDee attendance QRs, checking everyone in automatically. Open source, encrypted, built for Chula students.">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2222%22 fill=%22%23c31569%22/><text x=%2250%22 y=%2268%22 font-size=%2258%22 text-anchor=%22middle%22 fill=%22white%22 font-family=%22Georgia,serif%22>C</text></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -331,7 +331,7 @@
   <header class="hero">
     <div class="wrap hero-grid">
       <div>
-        <p class="eyebrow reveal">Discord bot &middot; MyCourseVille &middot; Chulalongkorn University</p>
+        <p class="eyebrow reveal">Discord bot &middot; MyCourseVille &middot; ClassDeeDee &middot; Chulalongkorn University</p>
         <h1 class="display reveal">Never miss a check&#8209;in <em>again.</em></h1>
         <p class="lede reveal">Someone posts the attendance link. The bot logs into MyCourseVille as every registered student in the channel and checks them in — before most people have even opened the app.</p>
         <div class="cta-row reveal">
@@ -486,8 +486,16 @@
           <h4>Attendance</h4>
           <ul class="cmd-list">
             <li><code>/checkin</code><span class="desc">Trigger manually</span></li>
+            <li><code>/scanner</code><span class="desc">Phone QR scanner</span></li>
             <li><code>/leaderboard</code><span class="desc">Who posts the most links</span></li>
             <li><code>/status</code><span class="desc">Uptime &amp; bot info</span></li>
+          </ul>
+        </div>
+        <div class="cmd-group">
+          <h4>ClassDeeDee</h4>
+          <ul class="cmd-list">
+            <li><code>/deedeeregister</code><span class="desc">MCV users: add a ChulaSSO login</span></li>
+            <li><code>/deedeecheck</code><span class="desc">Test ClassDeeDee login</span></li>
           </ul>
         </div>
       </div>
