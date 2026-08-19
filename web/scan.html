@@ -123,6 +123,12 @@
 (function () {
   var MCV = /https?:\/\/(?:www\.)?mycourseville\.com\/\?q=courseville\/course\/\d+\/attendance_qr_selfcheck\/\d+\/[A-Za-z0-9]+/;
 
+  // A ClassDeeDee attendance QR is JSON {"sid":..., "n":...} instead of a URL.
+  function isCddQR(raw) {
+    try { var d = JSON.parse(raw); return !!(d && d.sid && d.n); }
+    catch (e) { return false; }
+  }
+
   var video    = document.getElementById('video');
   var viewport = document.getElementById('viewport');
   var statusEl = document.getElementById('status');
@@ -210,6 +216,7 @@
     if (raw) {
       var hit = MCV.exec(raw);
       if (hit) { viewport.classList.add('hit'); return submit(hit[0]); }
+      if (isCddQR(raw)) { viewport.classList.add('hit'); return submit(raw); }
       say('That QR code is not an attendance link — keep scanning.', 'error');
     }
     timer = setTimeout(tick, 120);
@@ -243,14 +250,15 @@
   pasteForm.addEventListener('submit', function (e) {
     e.preventDefault();
     if (!secret) { return say('No access token. Open the scanner link the bot sent you.', 'error'); }
-    var hit = MCV.exec(pasteUrl.value.trim());
-    if (!hit) {
-      return say('That doesn’t look like a MyCourseVille attendance link. It should end in ' +
-                 '/attendance_qr_selfcheck/<id>/<code>.', 'error');
+    var val = pasteUrl.value.trim();
+    var hit = MCV.exec(val);
+    if (!hit && !isCddQR(val)) {
+      return say('That doesn’t look like an attendance code — an MCV link ' +
+                 '(/attendance_qr_selfcheck/<id>/<code>) or a ClassDeeDee QR.', 'error');
     }
     pasteUrl.value = '';
     pasteUrl.blur();
-    submit(hit[0]);
+    submit(hit ? hit[0] : val);
   });
 
   document.getElementById('forget').addEventListener('click', function (e) {

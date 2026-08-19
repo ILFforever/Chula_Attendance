@@ -24,6 +24,7 @@ from attendance import (
     fetch_public_course_info,
 )
 from webserver import start_web_server
+from classdeedee_attendance import check_in_all as cdd_check_in_all
 import commands
 
 # ---------------------------------------------------------------------------
@@ -38,7 +39,7 @@ class AttendanceBot(discord.Client):
         # The scanner server shares the bot's event loop, so a scan can reach
         # straight into the same check-in helpers the message handler uses.
         if SCAN_SECRET:
-            await start_web_server(handle_web_scan)
+            await start_web_server(handle_web_scan, on_scan_cdd=handle_web_scan_cdd)
         else:
             log.info("SCAN_SECRET not set — QR scanner web server disabled")
 
@@ -131,6 +132,34 @@ async def handle_web_scan(attendance_url: str) -> dict:
     log.info("Attendance URL received from QR scanner: %s", attendance_url)
     # No leaderboard credit — a scan carries no Discord identity to award it to.
     return await process_attendance_link(attendance_url, channel, note="📷 Scanned via QR scanner — ")
+
+
+async def handle_web_scan_cdd(sid: str, nonce: str) -> dict:
+    """Entry point for a scanned ClassDeeDee attendance QR ({sid, nonce})."""
+    if not monitored_channels:
+        return {"message": "⚠️ Scanned OK, but no Discord channel is monitored — nothing to post to."}
+    channel = bot.get_channel(next(iter(monitored_channels)))
+    if channel is None:
+        return {"message": "⚠️ Scanned OK, but the monitored channel is unreachable."}
+
+    log.info("ClassDeeDee attendance QR received from scanner: sid=%s", sid)
+    started = time.perf_counter()
+    status_msg = await channel.send(
+        f"📷 Scanned a **ClassDeeDee** attendance QR — checking in {len(registered_users)} user(s) …"
+    )
+
+    # Sequential for now (async logins are a planned follow-up); the nonce only
+    # lives ~5 s, so watch the timing when this runs against a real session.
+    results = await bot.loop.run_in_executor(executor, cdd_check_in_all, sid, nonce)
+    log.info("ClassDeeDee checked in %d user(s) in %.1fs", len(results), time.perf_counter() - started)
+
+    await status_msg.edit(content="📋 **ClassDeeDee Check-in**\n" + "\n".join(r for _, r in results))
+    _spawn(dm_results(results, "ClassDeeDee attendance"))
+
+    succeeded = sum(1 for _, r in results if "✅" in r)
+    return {
+        "message": f"✅ ClassDeeDee\n{succeeded} of {len(results)} user(s) checked in. Results posted in Discord.",
+    }
 
 
 # ---------------------------------------------------------------------------

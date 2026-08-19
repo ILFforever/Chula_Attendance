@@ -17,6 +17,7 @@ from aiohttp import web
 
 from config import log, SCAN_SECRET, WEB_PORT
 from attendance import extract_attendance_url
+from classdeedee_attendance import parse_attendance_qr
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 
@@ -44,9 +45,28 @@ async def _api_scan(request: web.Request) -> web.Response:
         log.warning("Rejected /api/scan with bad secret from %s", request.remote)
         return web.json_response({"error": "unauthorized — bad or missing scanner link"}, status=403)
 
-    url = extract_attendance_url(str(data.get("url", "")))
+    raw = str(data.get("url", ""))
+
+    # A ClassDeeDee attendance QR is JSON {"sid","n"}; an MCV QR is a URL. Try
+    # the ClassDeeDee shape first, then fall back to the MyCourseVille link.
+    cdd = parse_attendance_qr(raw)
+    if cdd:
+        if request.app.get("on_scan_cdd") is None:
+            return web.json_response({"error": "ClassDeeDee check-in isn't configured"}, status=400)
+        if _scan_lock.locked():
+            return web.json_response({"error": "another scan is still processing — hold on"}, status=429)
+        sid, nonce = cdd
+        async with _scan_lock:
+            try:
+                summary = await request.app["on_scan_cdd"](sid, nonce)
+            except Exception:
+                log.exception("ClassDeeDee scan handler blew up for sid=%s", sid)
+                return web.json_response({"error": "check-in failed, see bot logs"}, status=500)
+        return web.json_response(summary)
+
+    url = extract_attendance_url(raw)
     if not url:
-        return web.json_response({"error": "that QR code is not a MyCourseVille attendance link"}, status=400)
+        return web.json_response({"error": "that QR code is not an attendance code"}, status=400)
 
     if _scan_lock.locked():
         return web.json_response({"error": "another scan is still processing — hold on"}, status=429)
@@ -61,15 +81,18 @@ async def _api_scan(request: web.Request) -> web.Response:
     return web.json_response(summary)
 
 
-async def start_web_server(on_scan, port: int | None = None, ssl_context=None) -> web.AppRunner:
+async def start_web_server(on_scan, on_scan_cdd=None, port: int | None = None, ssl_context=None) -> web.AppRunner:
     """Start the scanner server on the current event loop.
 
-    ``on_scan`` is an async callable taking the decoded attendance URL and
-    returning a JSON-serialisable summary dict. ``ssl_context`` is only used
-    for local testing — in production Fly terminates TLS in front of us.
+    ``on_scan`` is an async callable taking the decoded MyCourseVille attendance
+    URL and returning a JSON-serialisable summary dict. ``on_scan_cdd`` is the
+    ClassDeeDee equivalent, taking (sessionid, nonce) from a scanned ClassDeeDee
+    attendance QR. ``ssl_context`` is only used for local testing — in
+    production Fly terminates TLS in front of us.
     """
     app = web.Application()
     app["on_scan"] = on_scan
+    app["on_scan_cdd"] = on_scan_cdd
     app.router.add_get("/", _index)
     app.router.add_get("/scan", _index)
     app.router.add_get("/health", _health)
