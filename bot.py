@@ -148,8 +148,9 @@ async def handle_web_scan_cdd(sid: str, nonce: str) -> dict:
         f"📷 Scanned a **ClassDeeDee** attendance QR — checking in {len(registered_users)} user(s) …"
     )
 
-    # Sequential for now (async logins are a planned follow-up); the nonce only
-    # lives ~5 s, so watch the timing when this runs against a real session.
+    # check_in_all fans logins out across its own bounded pool, so this single
+    # executor thread just blocks on that. The nonce lives ~8 s — timing is
+    # logged, and a slow run warns in the bot log.
     results = await bot.loop.run_in_executor(executor, cdd_check_in_all, sid, nonce)
     log.info("ClassDeeDee checked in %d user(s) in %.1fs", len(results), time.perf_counter() - started)
 

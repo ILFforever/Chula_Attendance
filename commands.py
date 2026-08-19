@@ -32,6 +32,7 @@ from classdeedee_login import (
     WrongCredentialsError as CddWrongCredentialsError,
     LoginError as CddLoginError,
 )
+from classdeedee_attendance import bench_logins
 from cugetreg import fetch_course_name
 
 
@@ -339,6 +340,7 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
             "`/scanner` — DM yourself a phone-camera QR scanner that checks everyone in\n"
             "`/logincheck` — Test if your saved credentials can log in\n"
             "`/deedeecheck` — Test if your saved credentials can log into ClassDeeDee (ChulaSSO)\n"
+            "`/deedeebench` — (temp) Benchmark logging in all users to ClassDeeDee (timing & RAM)\n"
             "`/status` — Show bot uptime, registered users, and monitored channels\n"
             "`/leaderboard` — See who's posted the most attendance links\n"
             "\n"
@@ -577,6 +579,48 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
             await interaction.followup.send(
                 f"💥 **{display_name}** — error: {error}", ephemeral=True
             )
+
+    @tree.command(name="deedeebench", description="(temp) Benchmark logging in ALL users to ClassDeeDee — timing & RAM")
+    async def cmd_deedeebench(interaction: discord.Interaction):
+        # NOTE: intentionally ungated — this is a temporary test command; remove it
+        # (and this handler) once the ClassDeeDee login timing/RAM is confirmed.
+        await interaction.response.send_message(
+            "⏳ Benchmarking ClassDeeDee logins for **all** users … (full breakdown also in the Fly logs)",
+            ephemeral=True,
+        )
+
+        stats = await bot.loop.run_in_executor(executor, bench_logins)
+        if stats.get("error"):
+            await interaction.followup.send(f"❌ {stats['error']}", ephemeral=True)
+            return
+
+        def mb(v):
+            return f"{v:.1f} MB" if isinstance(v, (int, float)) else "n/a"
+
+        lines = [
+            "🧪 **ClassDeeDee login benchmark**",
+            f"• Users: {stats['total']} → ✅ {stats['ok']} ok · ❌ {stats['failed']} failed",
+            f"• Wall time: **{stats['wall']:.2f}s** (cap {stats['workers']} workers, {stats['waves']} wave(s))",
+            f"• Per-login: fastest {stats['fastest']:.2f}s · slowest {stats['slowest']:.2f}s",
+        ]
+        if stats["rss_peak"] is not None:
+            lines.append(f"• RAM: {mb(stats['rss_before'])} → {mb(stats['rss_after'])} (peak **{mb(stats['rss_peak'])}**)")
+        elif stats["rss_before"] is not None:
+            lines.append(f"• RAM: {mb(stats['rss_before'])} → {mb(stats['rss_after'])} (peak n/a here)")
+        else:
+            lines.append("• RAM: not measurable on this platform (works on Fly/Linux)")
+
+        if stats["wall"] > 8:
+            lines.append(f"⚠️ Wall {stats['wall']:.1f}s > ~8s nonce window — a real check-in would drop late users.")
+
+        fails = [r for r in stats["per"] if not r["ok"]]
+        if fails:
+            lines.append("\n**Failures:**")
+            lines.extend(f"• {r['name']} — {r['error']}" for r in fails[:15])
+            if len(fails) > 15:
+                lines.append(f"…and {len(fails) - 15} more (see Fly logs)")
+
+        await interaction.followup.send("\n".join(lines), ephemeral=True)
 
     @tree.command(name="status", description="Show bot uptime and status")
     async def cmd_status(interaction: discord.Interaction):
