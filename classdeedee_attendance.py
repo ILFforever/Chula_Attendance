@@ -251,6 +251,10 @@ def check_in_all(sid: str, nonce: str) -> list[tuple[str, str]]:
     # Decrypt up front (cheap, sequential) so the parallel section is pure I/O.
     for uid, info in registered_users.items():
         display_name = info.get("display_name", info["username"])
+        # MCV "platform" accounts can't use ClassDeeDee (no ChulaSSO) — skip them
+        # silently so a scan's results aren't buried under "platform account" lines.
+        if info.get("login_method") == "platform":
+            continue
         try:
             password = decrypt_password(info["password"])
         except ValueError:
