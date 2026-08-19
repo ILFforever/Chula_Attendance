@@ -25,6 +25,11 @@ from attendance import (
     LoginError,
     fetch_public_course_info,
 )
+from classdeedee_login import (
+    login_classdeedee,
+    WrongCredentialsError as CddWrongCredentialsError,
+    LoginError as CddLoginError,
+)
 from cugetreg import fetch_course_name
 
 
@@ -331,6 +336,7 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
             "`/checkin <url>` — Manually trigger check-in with a MyCourseVille attendance URL\n"
             "`/scanner` — DM yourself a phone-camera QR scanner that checks everyone in\n"
             "`/logincheck` — Test if your saved credentials can log in\n"
+            "`/deedeecheck` — Test if your saved credentials can log into ClassDeeDee (ChulaSSO)\n"
             "`/status` — Show bot uptime, registered users, and monitored channels\n"
             "`/leaderboard` — See who's posted the most attendance links\n"
             "\n"
@@ -480,6 +486,77 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
         elif error == "login_failed":
             await interaction.followup.send(
                 f"🔒 **{display_name}** — login failed after retries. Try again later.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.followup.send(
+                f"💥 **{display_name}** — error: {error}", ephemeral=True
+            )
+
+    @tree.command(name="deedeecheck", description="Test if your saved credentials can log into ClassDeeDee")
+    async def cmd_deedeecheck(interaction: discord.Interaction):
+        uid = str(interaction.user.id)
+        if uid not in registered_users:
+            await interaction.response.send_message(
+                "❌ You are not registered. Use `/register` first.", ephemeral=True
+            )
+            return
+
+        info = registered_users[uid]
+        display_name = info.get("display_name", info["username"])
+
+        # ClassDeeDee authenticates via ChulaSSO (the CU IT / student-ID account).
+        # A MyCourseVille "platform" account can't log into ChulaSSO, so flag it.
+        if info.get("login_method") == "platform":
+            await interaction.response.send_message(
+                f"⚠️ **{display_name}** — your credentials are a **MyCourseVille platform** account, "
+                "but ClassDeeDee uses **ChulaSSO** (your CU IT / student-ID account). "
+                "This test needs a CU Net account to work.",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            password = decrypt_password(info["password"])
+        except ValueError:
+            await interaction.response.send_message(
+                "❌ Failed to decrypt your password. Please re-register with `/register`.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.send_message(
+            f"⏳ Testing ClassDeeDee login for **{display_name}** …", ephemeral=True
+        )
+
+        def _try_login():
+            try:
+                session = login_classdeedee(info["username"], password)
+                session.close()
+                return True, None
+            except CddWrongCredentialsError:
+                return False, "wrong_credentials"
+            except CddLoginError as exc:
+                return False, f"login_failed: {exc}"
+            except http_requests.RequestException as exc:
+                return False, f"network_error: {exc}"
+            except Exception as exc:
+                return False, f"unexpected: {exc}"
+
+        success, error = await bot.loop.run_in_executor(executor, _try_login)
+
+        if success:
+            await interaction.followup.send(
+                f"✅ **{display_name}** — ClassDeeDee login successful!", ephemeral=True
+            )
+        elif error == "wrong_credentials":
+            await interaction.followup.send(
+                f"🔑 **{display_name}** — wrong username or password. Use `/register` to update.",
+                ephemeral=True,
+            )
+        elif error.startswith("login_failed"):
+            await interaction.followup.send(
+                f"🔒 **{display_name}** — ClassDeeDee login failed. {error.split(': ', 1)[-1]}",
                 ephemeral=True,
             )
         else:
