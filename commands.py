@@ -32,7 +32,7 @@ from classdeedee_login import (
     WrongCredentialsError as CddWrongCredentialsError,
     LoginError as CddLoginError,
 )
-from classdeedee_attendance import bench_logins
+from classdeedee_attendance import bench_logins, resolve_cdd_credentials
 from cugetreg import fetch_course_name
 
 
@@ -321,6 +321,7 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
             "\n"
             "**User Management**\n"
             "`/register <username> <password>` — Register your MyCourseVille credentials (only you see the response)\n"
+            "`/deedeeregister <username> <password>` — **MyCourseVille users only:** add a ClassDeeDee (ChulaSSO) login\n"
             "`/unregister` — Remove your saved credentials\n"
             "`/users` — List all registered users\n"
             "\n"
@@ -497,6 +498,101 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
                 f"💥 **{display_name}** — error: {error}", ephemeral=True
             )
 
+    @tree.command(
+        name="deedeeregister",
+        description="Add a ClassDeeDee (ChulaSSO) login — only required if you registered with a MyCourseVille account",
+    )
+    @app_commands.describe(
+        username="Your ChulaSSO login (10-digit student ID)",
+        password="Your ChulaSSO / CU IT (email) password",
+    )
+    async def cmd_deedeeregister(interaction: discord.Interaction, username: str, password: str):
+        uid = str(interaction.user.id)
+        if uid not in registered_users:
+            await interaction.response.send_message(
+                "❌ Register your MyCourseVille account with `/register` first, then add your ClassDeeDee login here.",
+                ephemeral=True,
+            )
+            return
+
+        info = registered_users[uid]
+        display_name = info.get("display_name", info.get("username", uid))
+
+        # This command is ONLY for MyCourseVille-account users. A CU Net login is
+        # already a ChulaSSO login, so those users must not run this.
+        if info.get("login_method", "cu_net") == "cu_net":
+            await interaction.response.send_message(
+                "ℹ️ This command is **only for users who registered a MyCourseVille account**.\n"
+                "You registered with **CU Net**, which *is* your ChulaSSO login — it already works on "
+                "ClassDeeDee, so there's nothing to add here.",
+                ephemeral=True,
+            )
+            return
+
+        if not re.fullmatch(r"\d{10}", username):
+            await interaction.response.send_message(
+                "❌ Your ChulaSSO username should be your 10-digit student ID (e.g. `6799999999`).",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            encrypted = encrypt_password(password)
+        except ValueError as e:
+            log.error("Password encryption failed: %s", e)
+            await interaction.response.send_message(
+                "❌ Failed to securely store your password. Please contact the admin.", ephemeral=True
+            )
+            return
+
+        await interaction.response.send_message(
+            f"⏳ Verifying your ClassDeeDee login (`{username}`) …", ephemeral=True
+        )
+
+        # Verify BEFORE saving so a wrong credential is never persisted.
+        def _verify():
+            try:
+                session = login_classdeedee(username, password)
+                try:
+                    profile = fetch_profile(session)
+                finally:
+                    session.close()
+                return True, profile
+            except CddWrongCredentialsError:
+                return False, "wrong_credentials"
+            except CddLoginError as exc:
+                return False, f"login_failed: {exc}"
+            except http_requests.RequestException as exc:
+                return False, f"network_error: {exc}"
+            except Exception as exc:  # noqa: BLE001
+                return False, f"unexpected: {exc}"
+
+        ok, result = await bot.loop.run_in_executor(executor, _verify)
+        if not ok:
+            if result == "wrong_credentials":
+                msg = "🔑 Wrong student ID or password — **nothing saved**. Double-check and try again."
+            elif str(result).startswith("login_failed"):
+                msg = f"🔒 ClassDeeDee login failed — **nothing saved**. {str(result).split(': ', 1)[-1]}"
+            else:
+                msg = f"💥 Couldn't verify — **nothing saved**. ({result})"
+            await interaction.followup.send(msg, ephemeral=True)
+            return
+
+        # Verified — persist the ChulaSSO credential alongside the existing one.
+        info["chulasso"] = {"username": username, "password": encrypted}
+        persist_users()
+        profile = result
+        name = full_name(profile) or display_name
+        student_id = profile.get("studentid") or username
+        log.info("ClassDeeDee credential added for %s (%s)", display_name, username)
+        await interaction.followup.send(
+            "✅ ClassDeeDee login saved and verified!\n"
+            f"> **Name:** {name}\n"
+            f"> **Student ID:** `{student_id}`\n"
+            "You'll now be checked in on ClassDeeDee attendance scans too.",
+            ephemeral=True,
+        )
+
     @tree.command(name="deedeecheck", description="Test if your saved credentials can log into ClassDeeDee")
     async def cmd_deedeecheck(interaction: discord.Interaction):
         uid = str(interaction.user.id)
@@ -509,25 +605,25 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
         info = registered_users[uid]
         display_name = info.get("display_name", info["username"])
 
-        # ClassDeeDee authenticates via ChulaSSO (the CU IT / student-ID account).
-        # A MyCourseVille "platform" account can't log into ChulaSSO, so flag it.
-        if info.get("login_method") == "platform":
+        # Resolve the ClassDeeDee (ChulaSSO) credential — cu_net main cred, or a
+        # `chulasso` added via /deedeeregister. Platform-only users have none.
+        try:
+            creds = resolve_cdd_credentials(info)
+        except ValueError:
             await interaction.response.send_message(
-                f"⚠️ **{display_name}** — your credentials are a **MyCourseVille platform** account, "
-                "but ClassDeeDee uses **ChulaSSO** (your CU IT / student-ID account). "
-                "This test needs a CU Net account to work.",
+                "❌ Failed to decrypt your password. Please re-register.", ephemeral=True
+            )
+            return
+
+        if creds is None:
+            await interaction.response.send_message(
+                f"⚠️ **{display_name}** — you registered a **MyCourseVille** account, which can't log "
+                "into ClassDeeDee. Add your ChulaSSO login with `/deedeeregister` first.",
                 ephemeral=True,
             )
             return
 
-        try:
-            password = decrypt_password(info["password"])
-        except ValueError:
-            await interaction.response.send_message(
-                "❌ Failed to decrypt your password. Please re-register with `/register`.",
-                ephemeral=True,
-            )
-            return
+        cdd_username, cdd_password = creds
 
         await interaction.response.send_message(
             f"⏳ Testing ClassDeeDee login for **{display_name}** …", ephemeral=True
@@ -535,7 +631,7 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
 
         def _try_login():
             try:
-                session = login_classdeedee(info["username"], password)
+                session = login_classdeedee(cdd_username, cdd_password)
                 try:
                     profile = fetch_profile(session)
                 finally:

@@ -41,10 +41,30 @@ CDD_CHECKIN = f"{CDD}/api/attendants/checkin"
 
 # How many users to log in at once. Bounded so a class-sized burst doesn't
 # open dozens of TLS sessions simultaneously and blow the Fly RAM budget.
-CHECKIN_CONCURRENCY = max(1, int(os.environ.get("CDD_CHECKIN_CONCURRENCY", "8")))
+# Measured cost is tiny (~1.5 MB per concurrent login), so 16 fits a typical
+# class in a single wave while staying well within the Fly memory budget.
+CHECKIN_CONCURRENCY = max(1, int(os.environ.get("CDD_CHECKIN_CONCURRENCY", "16")))
 
 # The instructor's QR nonce lives ~8 s; used only to warn when a run overruns.
 NONCE_WINDOW_SECONDS = 8
+
+
+def resolve_cdd_credentials(info: dict) -> tuple[str, str] | None:
+    """Return (username, password) to use for ClassDeeDee, or None if the user
+    has no usable ClassDeeDee login.
+
+    Priority:
+      1. an explicit `chulasso` sub-credential (added via /deedeeregister), else
+      2. a cu_net main credential — a CU Net account IS a ChulaSSO account.
+    A MyCourseVille "platform" account with no `chulasso` returns None (it can't
+    authenticate against ChulaSSO). May raise ValueError if decryption fails.
+    """
+    cs = info.get("chulasso")
+    if cs and cs.get("username") and cs.get("password"):
+        return cs["username"], decrypt_password(cs["password"])
+    if info.get("login_method", "cu_net") == "cu_net":
+        return info["username"], decrypt_password(info["password"])
+    return None
 
 
 def parse_attendance_qr(text: str) -> tuple[str, str] | None:
@@ -68,14 +88,13 @@ def check_in_one(
     sid: str,
     nonce: str,
     display_name: str = "",
-    login_method: str = "cu_net",
 ) -> str:
-    """Log one user into ClassDeeDee and submit an attendance check-in."""
-    name = display_name or username
+    """Log one user into ClassDeeDee and submit an attendance check-in.
 
-    # ClassDeeDee auth is ChulaSSO — a MyCourseVille "platform" account can't use it.
-    if login_method == "platform":
-        return f"⚠️ **[{name}]** — MCV platform account can't use ClassDeeDee (needs ChulaSSO)"
+    `username`/`password` are the resolved ChulaSSO credentials
+    (see resolve_cdd_credentials).
+    """
+    name = display_name or username
 
     log.debug("ClassDeeDee check-in START: %s (%s)", name, username)
     login_started = time.perf_counter()
@@ -164,16 +183,17 @@ def bench_logins() -> dict:
     per: list[dict] = []
     targets: list[tuple[str, str, str]] = []  # (display_name, username, password)
     for uid, info in registered_users.items():
-        name = info.get("display_name", info["username"])
-        if info.get("login_method") == "platform":
-            per.append({"name": name, "ok": False, "seconds": 0.0, "error": "platform account (no ChulaSSO)"})
-            continue
+        name = info.get("display_name", info.get("username", uid))
         try:
-            pw = decrypt_password(info["password"])
+            creds = resolve_cdd_credentials(info)
         except ValueError:
             per.append({"name": name, "ok": False, "seconds": 0.0, "error": "decrypt failed"})
             continue
-        targets.append((name, info["username"], pw))
+        if creds is None:
+            per.append({"name": name, "ok": False, "seconds": 0.0, "error": "no ClassDeeDee login (use /deedeeregister)"})
+            continue
+        username, pw = creds
+        targets.append((name, username, pw))
 
     workers = min(CHECKIN_CONCURRENCY, len(targets)) if targets else 1
     waves = -(-len(targets) // workers) if targets else 0  # ceil division
@@ -246,22 +266,23 @@ def check_in_all(sid: str, nonce: str) -> list[tuple[str, str]]:
         return [("", "No users registered. Use `/register` to add users.")]
 
     results: list[tuple[str, str]] = []
-    targets: list[tuple[str, dict, str, str]] = []
+    targets: list[tuple[str, str, str, str]] = []  # (uid, username, password, display_name)
 
-    # Decrypt up front (cheap, sequential) so the parallel section is pure I/O.
+    # Resolve credentials up front (cheap, sequential) so the parallel section
+    # is pure I/O. Users with no ClassDeeDee login (MCV-only, no /deedeeregister)
+    # are skipped silently so scan results stay clean.
     for uid, info in registered_users.items():
-        display_name = info.get("display_name", info["username"])
-        # MCV "platform" accounts can't use ClassDeeDee (no ChulaSSO) — skip them
-        # silently so a scan's results aren't buried under "platform account" lines.
-        if info.get("login_method") == "platform":
-            continue
+        display_name = info.get("display_name", info.get("username", uid))
         try:
-            password = decrypt_password(info["password"])
+            creds = resolve_cdd_credentials(info)
         except ValueError:
-            log.error("Failed to decrypt password for %s", info["username"])
+            log.error("Failed to decrypt ClassDeeDee credentials for %s", display_name)
             results.append((uid, f"❌ **{display_name}** — failed to decrypt password (re-register)"))
             continue
-        targets.append((uid, info, password, display_name))
+        if creds is None:
+            continue
+        username, password = creds
+        targets.append((uid, username, password, display_name))
 
     if not targets:
         return results
@@ -270,14 +291,9 @@ def check_in_all(sid: str, nonce: str) -> list[tuple[str, str]]:
     log.info("ClassDeeDee check-in: %d user(s) across %d worker(s), sid=%s", len(targets), workers, sid)
     started = time.perf_counter()
 
-    def _one(target: tuple[str, dict, str, str]) -> tuple[str, str]:
-        uid, info, password, display_name = target
-        msg = check_in_one(
-            info["username"], password, sid, nonce,
-            display_name=display_name,
-            login_method=info.get("login_method", "cu_net"),
-        )
-        return uid, msg
+    def _one(target: tuple[str, str, str, str]) -> tuple[str, str]:
+        uid, username, password, display_name = target
+        return uid, check_in_one(username, password, sid, nonce, display_name=display_name)
 
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="cdd_checkin") as pool:
         for future in as_completed([pool.submit(_one, t) for t in targets]):
