@@ -59,6 +59,7 @@ CDD = "https://classdeedee.cloud.cp.eng.chula.ac.th"
 CDD_SERVICE = f"{CDD}/login/chulasso/"
 CDD_REDEEM = f"{CDD}/api/auth/"          # POST {"ssoTicket": ...}
 CDD_ABOUT = f"{CDD}/api/about"
+CDD_ME = f"{CDD}/api/users/me"           # GET → logged-in user's profile
 
 SERVICE_NAME = "ClassDeeDee by Krerk"
 REQUEST_TIMEOUT = 30
@@ -221,6 +222,31 @@ def login_classdeedee(username: str, password: str) -> http_requests.Session:
     return session
 
 
+def fetch_profile(session: http_requests.Session) -> dict:
+    """Return the logged-in user's ClassDeeDee profile.
+
+    Keys include: uid, username, studentid, firstname, lastname,
+    firstnameth, lastnameth, roles, last_seen. Proves the session is really
+    authenticated as this user. Raises LoginError if the profile can't be read.
+    """
+    r = session.get(CDD_ME, timeout=REQUEST_TIMEOUT, headers={"Accept": "application/json"})
+    if not r.ok:
+        raise LoginError(f"Could not fetch profile (HTTP {r.status_code})")
+    try:
+        return r.json()
+    except ValueError as exc:
+        raise LoginError(f"Profile response was not JSON: {exc}") from exc
+
+
+def full_name(profile: dict) -> str:
+    """Best-effort display name from a profile dict (English, else Thai)."""
+    en = " ".join(p for p in (profile.get("firstname"), profile.get("lastname")) if p).strip()
+    if en:
+        return en
+    th = " ".join(p for p in (profile.get("firstnameth"), profile.get("lastnameth")) if p).strip()
+    return th or profile.get("username", "")
+
+
 # ---------------------------------------------------------------------------
 # Credential resolution
 # ---------------------------------------------------------------------------
@@ -258,9 +284,13 @@ def main() -> int:
         log.error("Login failed: %s", exc)
         return 1
 
-    # Prove the session works.
-    r = session.get(CDD_ABOUT, timeout=REQUEST_TIMEOUT, headers={"Accept": "application/json"})
-    log.info("Authenticated %s → HTTP %d: %s", CDD_ABOUT, r.status_code, r.text[:400])
+    # Prove the session is authenticated as this user.
+    try:
+        profile = fetch_profile(session)
+        log.info("Logged in as: %s  (student id: %s, uid: %s)",
+                 full_name(profile), profile.get("studentid"), profile.get("uid"))
+    except LoginError as exc:
+        log.warning("Login succeeded but profile fetch failed: %s", exc)
     return 0
 
 

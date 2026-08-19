@@ -27,6 +27,8 @@ from attendance import (
 )
 from classdeedee_login import (
     login_classdeedee,
+    fetch_profile,
+    full_name,
     WrongCredentialsError as CddWrongCredentialsError,
     LoginError as CddLoginError,
 )
@@ -532,8 +534,11 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
         def _try_login():
             try:
                 session = login_classdeedee(info["username"], password)
-                session.close()
-                return True, None
+                try:
+                    profile = fetch_profile(session)
+                finally:
+                    session.close()
+                return True, profile
             except CddWrongCredentialsError:
                 return False, "wrong_credentials"
             except CddLoginError as exc:
@@ -546,9 +551,18 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
         success, error = await bot.loop.run_in_executor(executor, _try_login)
 
         if success:
-            await interaction.followup.send(
-                f"✅ **{display_name}** — ClassDeeDee login successful!", ephemeral=True
-            )
+            profile = error  # on success the second value is the profile dict
+            name = full_name(profile) or display_name
+            student_id = profile.get("studentid") or profile.get("username") or "—"
+            name_th = " ".join(
+                p for p in (profile.get("firstnameth"), profile.get("lastnameth")) if p
+            ).strip()
+            lines = [
+                f"✅ **{display_name}** — ClassDeeDee login successful!",
+                f"> **Name:** {name}" + (f" ({name_th})" if name_th else ""),
+                f"> **Student ID:** `{student_id}`",
+            ]
+            await interaction.followup.send("\n".join(lines), ephemeral=True)
         elif error == "wrong_credentials":
             await interaction.followup.send(
                 f"🔑 **{display_name}** — wrong username or password. Use `/register` to update.",
