@@ -47,6 +47,14 @@ async def _api_scan(request: web.Request) -> web.Response:
 
     raw = str(data.get("url", ""))
 
+    # Channel this scanner link was bound to (from /scanner). Results post there;
+    # if absent/unparseable, the handler falls back to DM-only.
+    channel_raw = data.get("channel")
+    try:
+        channel_id = int(channel_raw) if channel_raw else None
+    except (ValueError, TypeError):
+        channel_id = None
+
     # A ClassDeeDee attendance QR is JSON {"sid","n"}; an MCV QR is a URL. Try
     # the ClassDeeDee shape first, then fall back to the MyCourseVille link.
     cdd = parse_attendance_qr(raw)
@@ -58,7 +66,7 @@ async def _api_scan(request: web.Request) -> web.Response:
         sid, nonce = cdd
         async with _scan_lock:
             try:
-                summary = await request.app["on_scan_cdd"](sid, nonce)
+                summary = await request.app["on_scan_cdd"](sid, nonce, channel_id)
             except Exception:
                 log.exception("ClassDeeDee scan handler blew up for sid=%s", sid)
                 return web.json_response({"error": "check-in failed, see bot logs"}, status=500)
@@ -73,7 +81,7 @@ async def _api_scan(request: web.Request) -> web.Response:
 
     async with _scan_lock:
         try:
-            summary = await request.app["on_scan"](url)
+            summary = await request.app["on_scan"](url, channel_id)
         except Exception:
             log.exception("Scan handler blew up for %s", url)
             return web.json_response({"error": "check-in failed, see bot logs"}, status=500)
@@ -84,11 +92,11 @@ async def _api_scan(request: web.Request) -> web.Response:
 async def start_web_server(on_scan, on_scan_cdd=None, port: int | None = None, ssl_context=None) -> web.AppRunner:
     """Start the scanner server on the current event loop.
 
-    ``on_scan`` is an async callable taking the decoded MyCourseVille attendance
-    URL and returning a JSON-serialisable summary dict. ``on_scan_cdd`` is the
-    ClassDeeDee equivalent, taking (sessionid, nonce) from a scanned ClassDeeDee
-    attendance QR. ``ssl_context`` is only used for local testing — in
-    production Fly terminates TLS in front of us.
+    ``on_scan`` is an async callable ``(attendance_url, channel_id)`` returning a
+    JSON-serialisable summary dict. ``on_scan_cdd`` is the ClassDeeDee equivalent
+    ``(sessionid, nonce, channel_id)``. ``channel_id`` is the Discord channel the
+    scanner link was bound to (or None → DM-only). ``ssl_context`` is only used
+    for local testing — in production Fly terminates TLS in front of us.
     """
     app = web.Application()
     app["on_scan"] = on_scan

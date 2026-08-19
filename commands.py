@@ -756,7 +756,11 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
             )
             return
 
-        link = f"{SCAN_BASE_URL}/scan#t={SCAN_SECRET}"
+        # Encode the channel this was run in, so scan results post back here.
+        # (Fragment, so the channel id never hits the server access log either.)
+        channel_id = interaction.channel_id
+        link = f"{SCAN_BASE_URL}/scan#t={SCAN_SECRET}&c={channel_id}"
+        where = f"posted in <#{channel_id}> (and DMed to each user)" if channel_id else "DMed to each user"
         await interaction.response.send_message(
             f"📷 **Attendance QR Scanner**\n"
             f"{link}\n"
@@ -764,6 +768,7 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
             "Open it on your phone, allow camera access, and point it at the classroom QR code. "
             "The code is decoded on your device — only the link reaches the bot, which then checks in "
             "everyone registered.\n"
+            f"Results will be {where}.\n"
             "⚠️ Anyone with this link can trigger a check-in, so don't share it outside the group.",
             ephemeral=True,
         )

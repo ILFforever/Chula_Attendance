@@ -152,6 +152,15 @@
   if (m) {
     secret = decodeURIComponent(m[1]);
     localStorage.setItem('scan_token', secret);
+  }
+  // Channel this scanner link was bound to (from /scanner). Results post there.
+  var channel = localStorage.getItem('scan_channel') || '';
+  var cm = /[#&]c=([^&]+)/.exec(location.hash);
+  if (cm) {
+    channel = decodeURIComponent(cm[1]);
+    localStorage.setItem('scan_channel', channel);
+  }
+  if (m || cm) {
     history.replaceState(null, '', location.pathname);
   }
 
@@ -230,7 +239,7 @@
       var r = await fetch('/api/scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: url, secret: secret })
+        body: JSON.stringify({ url: url, secret: secret, channel: channel })
       });
       var body = await r.json();
       if (!r.ok) {
