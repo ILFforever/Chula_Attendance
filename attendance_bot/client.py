@@ -27,7 +27,8 @@ from attendance_bot.mcv.attendance import (
 )
 from attendance_bot.scanner.webserver import start_web_server
 from attendance_bot.classdeedee.attendance import check_in_all as cdd_check_in_all
-from attendance_bot.homework.dm import handle_homework_button, run_homework_scheduler_tick
+from attendance_bot.homework.dm import handle_homework_button, run_homework_scheduler_tick, run_deadline_reminder_tick
+from attendance_bot.settings_panel import handle_settings_interaction
 from attendance_bot import commands
 
 # ---------------------------------------------------------------------------
@@ -63,6 +64,8 @@ homework_executor = ThreadPoolExecutor(max_workers=HOMEWORK_CONCURRENCY, thread_
 @tasks.loop(minutes=15)
 async def homework_scheduler_loop():
     await run_homework_scheduler_tick(bot, homework_executor)
+    # No platform login involved — pure cache scan, safe to run every tick.
+    await run_deadline_reminder_tick(bot)
 
 
 @homework_scheduler_loop.before_loop
@@ -230,6 +233,7 @@ async def on_interaction(interaction: discord.Interaction):
     # View callback — see homework/dm.py's module docstring for why a click
     # needs to keep working even after a restart.
     await handle_homework_button(interaction)
+    await handle_settings_interaction(interaction)
 
 
 @bot.event

@@ -12,11 +12,17 @@ from __future__ import annotations
 import re
 import sys
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import requests as http_requests
 
-from attendance_bot.config import log, registered_users, is_homework_suppressed
+from attendance_bot.config import (
+    log,
+    registered_users,
+    is_homework_suppressed,
+    update_homework_deadline,
+    persist_homework,
+)
 from attendance_bot.security.crypto import decrypt_password
 from attendance_bot.mcv.attendance import (
     AttendanceLogger,
@@ -59,7 +65,11 @@ def _mcv_days_remaining(due_text: str) -> float | None:
     return n / (24.0 * 60.0)  # minute
 
 
-def _cdd_days_remaining(deadline: str | None) -> float | None:
+def _parse_cdd_deadline(deadline: str | None) -> datetime | None:
+    """ClassDeeDee's deadline as an absolute, UTC-aware datetime, or None if
+    unparseable. Shared by _cdd_days_remaining and the deadline-reminder
+    cache so both agree on the exact same instant.
+    """
     if not deadline:
         return None
     try:
@@ -68,6 +78,13 @@ def _cdd_days_remaining(deadline: str | None) -> float | None:
         return None
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=TZ_BANGKOK)
+    return dt.astimezone(timezone.utc)
+
+
+def _cdd_days_remaining(deadline: str | None) -> float | None:
+    dt = _parse_cdd_deadline(deadline)
+    if dt is None:
+        return None
     now = datetime.now(timezone.utc)
     return (dt - now).total_seconds() / 86400.0
 
@@ -130,6 +147,10 @@ def check_homework_for_user(uid: str) -> dict:
             session.close()
         for item in items:
             days = _mcv_days_remaining(item["due"])
+            # MCV gives no absolute deadline, only relative wording ("3 days")
+            # captured at observation time — good enough for a reminder, not
+            # for anything requiring precision (see module docstring).
+            due_dt = datetime.now(timezone.utc) + timedelta(days=days) if days is not None else None
             raw_items.append({
                 "platform": "mcv",
                 "course_code": item["course_code"] or "?",
@@ -137,6 +158,7 @@ def check_homework_for_user(uid: str) -> dict:
                 "title": item["title"],
                 "due_text": item["due"] or "due date unclear",
                 "days": days,
+                "due_dt": due_dt,
                 "link": item["link"],
                 "item_key": item["item_key"],
             })
@@ -160,15 +182,17 @@ def check_homework_for_user(uid: str) -> dict:
         try:
             username, password = creds
             for a in cdd_check_homework(username, password, subjects):
-                due_dt = a["deadline"]
-                days = _cdd_days_remaining(due_dt)
+                due_text = a["deadline"]
+                days = _cdd_days_remaining(due_text)
+                due_dt = _parse_cdd_deadline(due_text)
                 raw_items.append({
                     "platform": "classdeedee",
                     "course_code": a["course_code"] or "?",
                     "course_name": a["course"],
                     "title": a["title"],
-                    "due_text": due_dt or "due date unclear",
+                    "due_text": due_text or "due date unclear",
                     "days": days,
+                    "due_dt": due_dt,
                     "link": a["link"],
                     "item_key": a["uuid"] or a["link"],
                 })
@@ -205,6 +229,27 @@ def check_homework_for_user(uid: str) -> dict:
         "cdd_skipped": cdd_skipped,
         "cdd_disabled": cdd_disabled,
     }
+
+
+def cache_deadlines(uid: str, groups: list[dict]) -> None:
+    """Persist each item's resolved due_dt to the deadline-reminder cache
+    (config.homework_deadlines) so the 15-min reminder tick can scan for
+    "due within 12h" without a fresh MCV/ClassDeeDee login. Called after
+    every daily/manual check — see homework/dm.py's run_homework_check_for_user.
+    """
+    changed = False
+    for group in groups:
+        for item in group["items"]:
+            due_dt = item.get("due_dt")
+            if due_dt is None:
+                continue
+            update_homework_deadline(
+                uid, item["platform"], group["course_code"], item["item_key"], due_dt,
+                title=item["title"], course_name=group["course_name"] or "", link=item["link"],
+            )
+            changed = True
+    if changed:
+        persist_homework()
 
 
 def filter_suppressed(uid: str, groups: list[dict]) -> list[dict]:

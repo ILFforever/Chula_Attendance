@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import discord
 from discord import ui
@@ -51,9 +51,12 @@ from attendance_bot.config import (
     mark_homework_suppressed,
     list_suppressed_for_user,
     unmark_homework_suppressed,
+    is_homework_suppressed,
+    pending_deadline_items,
+    mark_deadline_reminded,
 )
 from attendance_bot.mcv.attendance import TZ_BANGKOK
-from attendance_bot.homework.check import check_homework_for_user, filter_suppressed
+from attendance_bot.homework.check import check_homework_for_user, filter_suppressed, cache_deadlines
 
 _PLATFORM_TAG = {"mcv": "MyCourseVille", "classdeedee": "ClassDeeDee"}
 
@@ -503,6 +506,7 @@ async def run_homework_check_for_user(bot: discord.Client, executor, uid: str) -
     except Exception:
         log.exception("Homework check crashed for %s", uid)
         return
+    cache_deadlines(uid, result["groups"])
     await send_homework_dm_for_user(bot, uid, result)
 
 
@@ -534,3 +538,110 @@ async def run_homework_scheduler_tick(bot: discord.Client, executor) -> None:
     log.info("Homework check: running for %d user(s) at hour=%d", len(due_uids), now.hour)
     for uid in due_uids:
         await run_homework_check_for_user(bot, executor, uid)
+
+
+# ---------------------------------------------------------------------------
+# "Deadline approaching" reminder — opt-in, per-user customizable window
+# ---------------------------------------------------------------------------
+# Off by default (registered_users["deadline_reminder_enabled"]) — separate
+# switch from the daily digest above, since this fires at whatever time of
+# day an item actually crosses the user's chosen window, not at their
+# digest hour. It reads only the deadline cache populated by
+# check.cache_deadlines (last refreshed on that user's most recent
+# daily/manual homework check) — it never logs into MCV/ClassDeeDee itself,
+# so running it on every 15-min scheduler tick costs nothing beyond a dict
+# scan regardless of how many users have it on.
+#
+# A live re-check wouldn't buy anything here anyway: MCV/ClassDeeDee's "still
+# outstanding" list doesn't reflect submission status either way, so a
+# platform re-fetch is no more authoritative than the cache. The only real
+# source of truth for "done" is the user's own "Mark as finished" click
+# (is_homework_suppressed) — checked fresh below regardless of cache age.
+DEFAULT_DEADLINE_REMINDER_HOURS = 12
+MIN_DEADLINE_REMINDER_HOURS = 1
+MAX_DEADLINE_REMINDER_HOURS = 72
+
+
+async def _send_deadline_reminder(bot: discord.Client, uid: str, entries: list[tuple[str, dict]]) -> None:
+    """DM one user about the item(s) that just entered their reminder window.
+
+    Reuses build_course_container so each item keeps its normal "Open in
+    web" / "Mark as finished" controls, behaving exactly like the daily
+    digest's buttons.
+    """
+    try:
+        user = bot.get_user(int(uid)) or await bot.fetch_user(int(uid))
+    except (discord.NotFound, discord.HTTPException) as exc:
+        log.warning("Deadline reminder: could not resolve Discord user %s: %s", uid, exc)
+        return
+
+    now = datetime.now(timezone.utc)
+    by_course: dict[str, dict] = {}
+    for key, entry in entries:
+        item_key = key.split(":", 3)[3]
+        due_dt = datetime.fromisoformat(entry["due_dt"])
+        days_left = max(0.0, (due_dt - now).total_seconds() / 86400.0)
+        group = by_course.setdefault(entry["course_code"], {
+            "course_code": entry["course_code"],
+            "course_name": entry.get("course_name"),
+            "items": [],
+        })
+        group["items"].append({
+            "platform": entry.get("platform", ""),
+            "title": entry.get("title") or "Untitled",
+            "due_text": _relative_days_text(days_left),
+            "days": days_left,
+            "link": entry.get("link", ""),
+            "item_key": item_key,
+        })
+
+    view = ui.LayoutView(timeout=None)
+    view.add_item(ui.TextDisplay("# Deadline approaching"))
+    view.add_item(ui.Separator())
+    for group in by_course.values():
+        view.add_item(build_course_container(uid, group))
+
+    try:
+        await user.send(view=view)
+    except discord.HTTPException as exc:
+        log.warning("Deadline reminder: could not DM %s: %s", uid, exc)
+
+
+async def run_deadline_reminder_tick(bot: discord.Client) -> None:
+    """Called on every scheduler tick (see client.py). Pure cache lookup —
+    see the module comment above for why this needs no platform login.
+
+    Gated per-user: skipped entirely for anyone who hasn't opted in with
+    `/deadlinereminder on`, and measured against that user's own configured
+    window (`/deadlinereminderhours`, default 12).
+    """
+    pending = pending_deadline_items()
+    if not pending:
+        return
+
+    now = datetime.now(timezone.utc)
+    by_uid: dict[str, list[tuple[str, dict]]] = {}
+    for uid, key, entry in pending:
+        info = registered_users.get(uid)
+        if not info or not info.get("deadline_reminder_enabled"):
+            continue
+        hours = info.get("deadline_reminder_hours", DEFAULT_DEADLINE_REMINDER_HOURS)
+        due_dt = datetime.fromisoformat(entry["due_dt"])
+        if due_dt - now > timedelta(hours=hours):
+            continue
+
+        item_key = key.split(":", 3)[3]
+        if is_homework_suppressed(uid, entry.get("platform", ""), entry.get("course_code", "?"), item_key):
+            mark_deadline_reminded(key)  # already handled — stop re-checking it every tick
+            continue
+        by_uid.setdefault(uid, []).append((key, entry))
+
+    if not by_uid:
+        return
+
+    for uid, entries in by_uid.items():
+        await _send_deadline_reminder(bot, uid, entries)
+        for key, _ in entries:
+            mark_deadline_reminded(key)
+
+    log.info("Deadline reminder: sent to %d user(s)", len(by_uid))

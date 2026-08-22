@@ -18,7 +18,14 @@ from attendance_bot.config import (
     SCAN_SECRET,
     SCAN_BASE_URL,
 )
-from attendance_bot.homework.dm import run_homework_check_for_user, DEFAULT_HOMEWORK_HOUR
+from attendance_bot.homework.dm import (
+    run_homework_check_for_user,
+    DEFAULT_HOMEWORK_HOUR,
+    DEFAULT_DEADLINE_REMINDER_HOURS,
+    MIN_DEADLINE_REMINDER_HOURS,
+    MAX_DEADLINE_REMINDER_HOURS,
+)
+from attendance_bot.settings_panel import build_settings_view
 from attendance_bot.release_notes import RELEASE_MESSAGES
 from attendance_bot.security.crypto import encrypt_password, decrypt_password
 from attendance_bot.mcv.attendance import (
@@ -351,7 +358,10 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
             await interaction.response.send_message(
                 f"✅ Daily homework check enabled — you'll get a DM around **{hour:02d}:00** (Bangkok time) "
                 "on any day you have outstanding work across MyCourseVille and ClassDeeDee.\n"
-                "Use `/homeworktime` to change when it arrives, or `/homeworkcheck` to run it right now.",
+                "Use `/homeworktime` to change when it arrives, or `/homeworkcheck` to run it right now.\n"
+                "Want a heads-up right before something's due too? Try `/deadlinereminder on` (off by default).\n"
+                "_Note: MyCourseVille only reports items due within the next 7 days — anything further out "
+                "won't show up until it's inside that window._",
                 ephemeral=True,
             )
         else:
@@ -403,6 +413,82 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
             ephemeral=True,
         )
 
+    @tree.command(
+        name="deadlinereminder",
+        description="Enable or disable a heads-up DM shortly before an unfinished item is due (off by default)",
+    )
+    @app_commands.describe(action="Turn the deadline reminder on or off")
+    async def cmd_deadlinereminder(interaction: discord.Interaction, action: HomeworkToggle):
+        uid = str(interaction.user.id)
+        if uid not in registered_users:
+            await interaction.response.send_message(
+                "❌ You need to `/register` first.", ephemeral=True
+            )
+            return
+
+        if action == HomeworkToggle.On:
+            registered_users[uid]["deadline_reminder_enabled"] = True
+            persist_users()
+            hours = registered_users[uid].get("deadline_reminder_hours", DEFAULT_DEADLINE_REMINDER_HOURS)
+            log.info("User %s enabled deadline reminder", interaction.user.display_name)
+            await interaction.response.send_message(
+                f"✅ Deadline reminder enabled — you'll get a DM about **{hours}h** before anything you "
+                "haven't marked finished is due (MyCourseVille + ClassDeeDee).\n"
+                "Use `/deadlinereminderhours` to change the window.\n"
+                "_Note: MyCourseVille only reports items due within the next 7 days — anything further out "
+                "won't show up until it's inside that window._",
+                ephemeral=True,
+            )
+        else:
+            registered_users[uid]["deadline_reminder_enabled"] = False
+            persist_users()
+            log.info("User %s disabled deadline reminder", interaction.user.display_name)
+            await interaction.response.send_message(
+                "✅ Deadline reminder disabled.", ephemeral=True
+            )
+
+    @tree.command(
+        name="deadlinereminderhours",
+        description="Set how many hours before something's due the deadline reminder DM arrives",
+    )
+    @app_commands.describe(
+        hours=f"Hours before due time, {MIN_DEADLINE_REMINDER_HOURS}-{MAX_DEADLINE_REMINDER_HOURS} (default {DEFAULT_DEADLINE_REMINDER_HOURS})"
+    )
+    async def cmd_deadlinereminderhours(
+        interaction: discord.Interaction,
+        hours: app_commands.Range[int, MIN_DEADLINE_REMINDER_HOURS, MAX_DEADLINE_REMINDER_HOURS],
+    ):
+        uid = str(interaction.user.id)
+        if uid not in registered_users:
+            await interaction.response.send_message(
+                "❌ You need to `/register` first.", ephemeral=True
+            )
+            return
+
+        registered_users[uid]["deadline_reminder_hours"] = hours
+        persist_users()
+        log.info("User %s set deadline reminder window to %dh", interaction.user.display_name, hours)
+
+        enabled = registered_users[uid].get("deadline_reminder_enabled", False)
+        note = "" if enabled else "\n⚠️ Your deadline reminder is currently **off** — use `/deadlinereminder on` to enable it."
+        await interaction.response.send_message(
+            f"✅ Deadline reminder window set to **{hours}h** before due.{note}",
+            ephemeral=True,
+        )
+
+    @tree.command(
+        name="settings",
+        description="Open your settings panel — notifications and course enrollment, all in one place",
+    )
+    async def cmd_settings(interaction: discord.Interaction):
+        uid = str(interaction.user.id)
+        if uid not in registered_users:
+            await interaction.response.send_message(
+                "❌ You need to `/register` first.", ephemeral=True
+            )
+            return
+        await interaction.response.send_message(view=build_settings_view(interaction.user), ephemeral=True)
+
     # -------------------------------------------------------------------
     # Help
     # -------------------------------------------------------------------
@@ -414,7 +500,8 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
             "**User Management**\n"
             "`/register <username> <password>` — Register your MyCourseVille credentials (only you see the response)\n"
             "`/deedeeregister <username> <password>` — **MyCourseVille users only:** add a ClassDeeDee (ChulaSSO) login\n"
-            "`/unregister` — Remove your saved credentials\n"
+            "`/deedeeunregister` — Remove just that ClassDeeDee login, keep your MyCourseVille account\n"
+            "`/unregister` — Remove everything — MyCourseVille, ClassDeeDee, and all your settings\n"
             "`/users` — List all registered users\n"
             "\n"
             "**Course Enrollment**\n"
@@ -437,11 +524,18 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
             "`/status` — Show bot uptime, registered users, and monitored channels\n"
             "`/leaderboard` — See who's posted the most attendance links\n"
             "\n"
+            "`/settings` — One panel for notifications (homework digest, deadline reminder, ClassDeeDee) and course enrollment\n"
+            "\n"
             "**Homework Check**\n"
             "`/homework on` — Get a daily DM listing outstanding work (MyCourseVille + ClassDeeDee)\n"
             "`/homework off` — Stop the daily DM\n"
             "`/homeworktime <hour>` — Set what hour it arrives, 0-23 Bangkok time (default 8am)\n"
             "`/homeworkcheck` — Run it once right now, without needing `/homework on` first\n"
+            "`/deadlinereminder on` — Separate, off-by-default DM shortly before an unfinished item is due\n"
+            "`/deadlinereminder off` — Stop that DM\n"
+            "`/deadlinereminderhours <hours>` — How many hours before due, "
+            f"{MIN_DEADLINE_REMINDER_HOURS}-{MAX_DEADLINE_REMINDER_HOURS} (default {DEFAULT_DEADLINE_REMINDER_HOURS})\n"
+            "_MyCourseVille only reports items due within 7 days — anything further out won't appear until then._\n"
             "\n"
             "**How it works**\n"
             "When a MyCourseVille attendance link is posted in a monitored channel, "
@@ -738,6 +832,48 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
             f"> **Name:** {name}\n"
             f"> **Student ID:** `{student_id}`\n"
             "You'll now be checked in on ClassDeeDee attendance scans too.",
+            ephemeral=True,
+        )
+
+    @tree.command(
+        name="deedeeunregister",
+        description="Remove your separate ClassDeeDee (ChulaSSO) login, keeping your MyCourseVille account",
+    )
+    async def cmd_deedeeunregister(interaction: discord.Interaction):
+        uid = str(interaction.user.id)
+        if uid not in registered_users:
+            await interaction.response.send_message(
+                "❌ You are not registered.", ephemeral=True
+            )
+            return
+
+        info = registered_users[uid]
+
+        # A CU Net login IS a ChulaSSO login — same credential, not a separate
+        # one — so there's nothing here to unlink independently of the whole
+        # account. `/classdeedee off` is the right tool for "stop using my
+        # account on ClassDeeDee" without deleting anything.
+        if info.get("login_method", "cu_net") == "cu_net":
+            await interaction.response.send_message(
+                "ℹ️ You registered with **CU Net**, which *is* your ChulaSSO login — there's no separate "
+                "ClassDeeDee credential to remove. Use `/classdeedee off` if you want to stop being checked "
+                "in on ClassDeeDee without deleting your MyCourseVille account.",
+                ephemeral=True,
+            )
+            return
+
+        if "chulasso" not in info:
+            await interaction.response.send_message(
+                "ℹ️ You don't have a separate ClassDeeDee login saved.", ephemeral=True
+            )
+            return
+
+        del info["chulasso"]
+        persist_users()
+        log.info("ClassDeeDee credential removed for %s", interaction.user.display_name)
+        await interaction.response.send_message(
+            "✅ Your ClassDeeDee login has been removed. Your MyCourseVille account is untouched — "
+            "use `/deedeeregister` again any time to re-add it.",
             ephemeral=True,
         )
 

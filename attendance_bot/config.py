@@ -24,7 +24,7 @@ log.setLevel(logging.DEBUG)
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-BOT_VERSION = "3.0.0"
+BOT_VERSION = "3.2.0"
 
 DATA_DIR = os.environ.get("DATA_DIR", ".")
 CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
@@ -87,9 +87,16 @@ seen_links: dict[str, str] = _leaderboard_data.get("seen_links", {})
 #   — assignments a user clicked "Handed in" on; skipped until pruned.
 # "last_run": { "discord_user_id": "YYYY-MM-DD" } (Bangkok-local date) — guards
 #   the hourly scheduler tick from re-sending the same user's DM twice in one day.
+# "deadlines": { "uid:platform:course_code:item_key": {"due_dt": iso, "deadline_reminded": bool, ...} }
+#   — cache of each outstanding item's resolved due time, refreshed on every
+#   daily/manual homework check. Drives the opt-in "deadline approaching"
+#   reminder tick (per-user window, see registered_users["deadline_reminder_hours"])
+#   without a fresh MCV/ClassDeeDee login on every scan — see
+#   homework/dm.py's run_deadline_reminder_tick.
 _homework_data = load_json(HOMEWORK_FILE)
 homework_suppressed: dict[str, str] = _homework_data.get("suppressed", {})
 homework_last_run: dict[str, str] = _homework_data.get("last_run", {})
+homework_deadlines: dict[str, dict] = _homework_data.get("deadlines", {})
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +135,11 @@ def persist_leaderboard():
 
 
 def persist_homework():
-    save_json(HOMEWORK_FILE, {"suppressed": homework_suppressed, "last_run": homework_last_run})
+    save_json(HOMEWORK_FILE, {
+        "suppressed": homework_suppressed,
+        "last_run": homework_last_run,
+        "deadlines": homework_deadlines,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +252,79 @@ def homework_already_ran_today(uid: str, today_str: str) -> bool:
 def mark_homework_ran_today(uid: str, today_str: str):
     homework_last_run[uid] = today_str
     persist_homework()
+
+
+# ---------------------------------------------------------------------------
+# Homework deadline reminder ("due soon", per-user opt-in + window) helpers
+# ---------------------------------------------------------------------------
+# Prune shortly after a due date passes — an entry has no further use once
+# its window has closed, whether or not a reminder ever fired for it.
+HOMEWORK_DEADLINE_TTL = timedelta(days=2)
+
+
+def prune_homework_deadlines():
+    cutoff = datetime.now(timezone.utc) - HOMEWORK_DEADLINE_TTL
+    stale = [
+        key for key, entry in homework_deadlines.items()
+        if _parse_iso(entry.get("due_dt", "")) is None or _parse_iso(entry["due_dt"]) < cutoff
+    ]
+    for key in stale:
+        del homework_deadlines[key]
+    if stale:
+        persist_homework()
+
+
+def update_homework_deadline(
+    uid: str, platform: str, course_code: str, item_key: str, due_dt: datetime,
+    *, title: str = "", course_name: str = "", link: str = "",
+):
+    """Cache/refresh one item's resolved absolute due time.
+
+    Resets "deadline_reminded" if the due date itself moved since it was last
+    seen — a rescheduled deadline earns its own fresh warning.
+    """
+    key = homework_key(uid, platform, course_code, item_key)
+    due_dt_iso = due_dt.isoformat()
+    existing = homework_deadlines.get(key)
+    reminded = bool(existing and existing.get("due_dt") == due_dt_iso and existing.get("deadline_reminded"))
+    homework_deadlines[key] = {
+        "due_dt": due_dt_iso,
+        "deadline_reminded": reminded,
+        "title": title,
+        "course_name": course_name,
+        "link": link,
+        "platform": platform,
+        "course_code": course_code,
+    }
+
+
+def mark_deadline_reminded(storage_key: str):
+    if storage_key in homework_deadlines:
+        homework_deadlines[storage_key]["deadline_reminded"] = True
+        persist_homework()
+
+
+def pending_deadline_items() -> list[tuple[str, str, dict]]:
+    """(uid, storage_key, entry) for every cached item not yet reminded and
+    not already past due — unfiltered by any reminder window, since that
+    window is per-user (see registered_users["deadline_reminder_hours"]).
+    Callers filter by each user's own window and reminder opt-in, and should
+    check is_homework_suppressed before sending anything.
+
+    Pure cache lookup — no platform login.
+    """
+    prune_homework_deadlines()
+    now = datetime.now(timezone.utc)
+    out = []
+    for key, entry in homework_deadlines.items():
+        if entry.get("deadline_reminded"):
+            continue
+        due_dt = _parse_iso(entry.get("due_dt", ""))
+        if due_dt is None or due_dt <= now:
+            continue
+        uid = key.split(":", 1)[0]
+        out.append((uid, key, entry))
+    return out
 
 
 def record_leaderboard_post(uid: str, display_name: str):
