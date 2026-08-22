@@ -51,14 +51,21 @@ NONCE_WINDOW_SECONDS = 8
 
 def resolve_cdd_credentials(info: dict) -> tuple[str, str] | None:
     """Return (username, password) to use for ClassDeeDee, or None if the user
-    has no usable ClassDeeDee login.
+    has no usable ClassDeeDee login, or has turned ClassDeeDee off (/classdeedee
+    off — for CU Net users who don't want their account used there at all).
 
     Priority:
       1. an explicit `chulasso` sub-credential (added via /deedeeregister), else
       2. a cu_net main credential — a CU Net account IS a ChulaSSO account.
     A MyCourseVille "platform" account with no `chulasso` returns None (it can't
     authenticate against ChulaSSO). May raise ValueError if decryption fails.
+
+    This is the single choke point both check-in (check_in_all) and the
+    homework check (homework/check.py) go through, so the /classdeedee
+    toggle only needs to be respected here.
     """
+    if not info.get("classdeedee_enabled", True):
+        return None
     cs = info.get("chulasso")
     if cs and cs.get("username") and cs.get("password"):
         return cs["username"], decrypt_password(cs["password"])

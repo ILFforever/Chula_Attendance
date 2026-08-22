@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Chula Attendance — never miss a check-in again</title>
-<meta name="description" content="A Discord bot that watches your class channel for MyCourseVille attendance links and scans ClassDeeDee attendance QRs, checking everyone in automatically. Open source, encrypted, built for Chula students.">
+<meta name="description" content="A Discord bot that watches your class channel for MyCourseVille attendance links and scans ClassDeeDee attendance QRs, checking everyone in automatically — and now DMs you a daily summary of outstanding homework too. Open source, encrypted, built for Chula students.">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2222%22 fill=%22%23c31569%22/><text x=%2250%22 y=%2268%22 font-size=%2258%22 text-anchor=%22middle%22 fill=%22white%22 font-family=%22Georgia,serif%22>C</text></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -76,6 +76,17 @@
   .brand{display:flex; align-items:center; gap:.55rem; font-family:"Fraunces",serif; font-weight:600; font-size:1.05rem; text-decoration:none; color:var(--ink)}
   .brand .dot{width:.55rem; height:.55rem; border-radius:50%; background:var(--pink); flex:none}
   .navlinks{display:flex; align-items:center; gap:1.25rem; font-size:.9rem}
+  .whats-new-link{
+    display:flex; align-items:center; gap:.4rem;
+    font-family:"Public Sans",sans-serif; font-size:.85rem; font-weight:600;
+    color:var(--pink-deep); text-decoration:none;
+  }
+  .whats-new-link:hover{color:var(--pink)}
+  .whats-new-link .pip{
+    font-size:.65rem; letter-spacing:.05em; text-transform:uppercase; font-weight:800;
+    background:var(--pink); color:#fff8fa; padding:.12rem .4rem; border-radius:999px;
+  }
+  @media (max-width:560px){ .whats-new-link{display:none} }
   .tag{
     font-size:.72rem; letter-spacing:.06em; text-transform:uppercase;
     color:var(--muted); border:1px solid var(--line); border-radius:999px;
@@ -153,6 +164,30 @@
   .console-line b{color:var(--ink); font-weight:600}
   .console-line small{color:var(--muted)}
   .console-more{color:var(--muted); font-size:.8rem; padding-top:.5rem}
+
+  /* Homework Check mockup — deliberately plain (bold sans title, colored
+     accent bar, real button chips) to match the actual Discord message,
+     not the pink-serif brand voice used for the attendance mockup above. */
+  .hw-body{padding:0}
+  .hw-card{
+    border-left:4px solid #e6b34d; padding:1.3rem 1.4rem 1.4rem 1.5rem;
+  }
+  .hw-course{font-family:"Public Sans",sans-serif; font-weight:700; font-size:1rem; color:var(--ink); margin-bottom:1.1rem}
+  .hw-item{font-weight:700; color:var(--ink); font-size:.92rem; margin-bottom:.3rem}
+  .hw-meta{color:var(--muted); font-size:.82rem; margin:0 0 1rem}
+  .hw-buttons{display:flex; flex-wrap:wrap; gap:.6rem}
+  .hw-btn{
+    display:inline-flex; align-items:center;
+    background:color-mix(in oklab, var(--ink) 6%, transparent);
+    border:1px solid var(--line); color:var(--ink);
+    padding:.5rem .95rem; border-radius:7px; font-size:.8rem; font-weight:600;
+    font-family:"Public Sans",sans-serif;
+  }
+  .hw-more{
+    border-top:1px solid var(--line); padding:1rem 1.4rem;
+    color:var(--muted); font-size:.8rem; display:flex; align-items:center; gap:.6rem;
+  }
+  .hw-more .dot{width:.5rem; height:.5rem; border-radius:50%; background:#57cc7f; flex:none}
 
   .hero-grid{display:grid; grid-template-columns:1.05fr .95fr; gap:clamp(2rem,5vw,4rem); align-items:start}
   @media (max-width:860px){ .hero-grid{grid-template-columns:1fr} .console{max-width:none} }
@@ -317,7 +352,8 @@
   <div class="wrap row">
     <a class="brand" href="#top"><span class="dot"></span>Chula Attendance</a>
     <div class="navlinks">
-      <span class="tag">v2.0.0</span>
+      <span class="tag">v3.0.0</span>
+      <a class="whats-new-link" href="#homework"><span class="pip">New</span> What's new</a>
       <a class="icon-link" href="https://github.com/ILFforever/Chula_Attendance" aria-label="GitHub repository" target="_blank" rel="noopener">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.73.5.5 5.74.5 12.02c0 5.02 3.26 9.28 7.78 10.79.57.1.78-.25.78-.55v-2.1c-3.17.69-3.84-1.36-3.84-1.36-.52-1.3-1.27-1.65-1.27-1.65-1.04-.71.08-.7.08-.7 1.15.08 1.75 1.18 1.75 1.18 1.02 1.75 2.68 1.24 3.34.95.1-.74.4-1.24.72-1.53-2.53-.29-5.19-1.27-5.19-5.63 0-1.24.44-2.26 1.17-3.06-.12-.29-.51-1.46.11-3.04 0 0 .96-.31 3.14 1.17a10.9 10.9 0 015.72 0c2.18-1.48 3.14-1.17 3.14-1.17.62 1.58.23 2.75.11 3.04.73.8 1.17 1.82 1.17 3.06 0 4.37-2.67 5.34-5.21 5.62.41.36.77 1.06.77 2.14v3.17c0 .3.21.66.79.55A10.53 10.53 0 0023.5 12c0-6.28-5.23-11.5-11.5-11.5z"/></svg>
       </a>
@@ -435,6 +471,59 @@
     </div>
   </section>
 
+  <section id="homework">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <p class="kicker">New in v3.0</p>
+        <h2 class="section-title">Homework, tracked too.</h2>
+      </div>
+
+      <div class="hero-grid">
+        <div class="reveal">
+          <p class="lede" style="margin-bottom:1.6rem">A daily DM listing what's still outstanding across MyCourseVille and ClassDeeDee — sorted by urgency, off by default, entirely separate from attendance check-in.</p>
+          <div class="steps" style="grid-template-columns:1fr">
+            <div class="step">
+              <span class="step-no">1</span>
+              <h3><code>/homework on</code></h3>
+              <p>Pick a time with <code>/homeworktime &lt;hour&gt;</code> — default 8am Bangkok time.</p>
+            </div>
+            <div class="step">
+              <span class="step-no">2</span>
+              <h3>Each course, its own message</h3>
+              <p>Red, yellow, or green by how soon it's due. An <b>Open in web</b> button and a <b>Mark as finished</b> button sit right under every item.</p>
+            </div>
+            <div class="step">
+              <span class="step-no">3</span>
+              <h3>Made a mistake?</h3>
+              <p><b>View finished items</b> lists everything you've marked done, each with a one-tap <b>Restore</b>. Buttons keep working even days later.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="console reveal" aria-hidden="true">
+          <div class="console-head"><span class="dots"><span></span><span></span><span></span></span> Direct Message</div>
+          <div class="hw-body">
+            <div class="hw-card">
+              <div class="hw-course">2110413 — Computer Security</div>
+              <div class="hw-item">Password Security</div>
+              <div class="hw-meta">ClassDeeDee &middot; Due in 2 days</div>
+              <div class="hw-buttons">
+                <span class="hw-btn">Open in web</span>
+                <span class="hw-btn">Mark as finished</span>
+              </div>
+            </div>
+            <div class="hw-more"><span class="dot"></span> 2110506 — Software-Defined Systems I — 1 item, due in 4 days</div>
+          </div>
+        </div>
+      </div>
+
+      <a class="more-link reveal" href="https://github.com/ILFforever/Chula_Attendance#homework-check" target="_blank" rel="noopener">
+        More about Homework Check on GitHub
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+      </a>
+    </div>
+  </section>
+
   <section class="strip">
     <div class="wrap">
       <div class="reveal">
@@ -464,6 +553,7 @@
             <li><code>/register</code><span class="desc">Save your MCV credentials</span></li>
             <li><code>/unregister</code><span class="desc">Remove them</span></li>
             <li><code>/logincheck</code><span class="desc">Test that login works</span></li>
+            <li><code>/release</code><span class="desc">What's new in the latest version</span></li>
           </ul>
         </div>
         <div class="cmd-group">
@@ -496,6 +586,15 @@
           <ul class="cmd-list">
             <li><code>/deedeeregister</code><span class="desc">MCV users: add a ChulaSSO login</span></li>
             <li><code>/deedeecheck</code><span class="desc">Test ClassDeeDee login</span></li>
+            <li><code>/classdeedee</code><span class="desc">Opt your account out entirely (default: on)</span></li>
+          </ul>
+        </div>
+        <div class="cmd-group">
+          <h4>Homework Check</h4>
+          <ul class="cmd-list">
+            <li><code>/homework</code><span class="desc">Turn the daily reminder DM on/off</span></li>
+            <li><code>/homeworktime</code><span class="desc">Set what hour it arrives</span></li>
+            <li><code>/homeworkcheck</code><span class="desc">Run it once right now</span></li>
           </ul>
         </div>
       </div>

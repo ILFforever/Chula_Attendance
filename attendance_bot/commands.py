@@ -18,6 +18,8 @@ from attendance_bot.config import (
     SCAN_SECRET,
     SCAN_BASE_URL,
 )
+from attendance_bot.homework.dm import run_homework_check_for_user, DEFAULT_HOMEWORK_HOUR
+from attendance_bot.release_notes import RELEASE_MESSAGES
 from attendance_bot.security.crypto import encrypt_password, decrypt_password
 from attendance_bot.mcv.attendance import (
     MCV_URL_PATTERN,
@@ -53,7 +55,7 @@ def _parse_course_id(raw: str) -> str | None:
 DM_CONCURRENCY = 8
 
 
-def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, executor, bot_start_time):
+def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, executor, bot_start_time, homework_executor):
     """Register all slash commands on the given tree."""
 
     # -------------------------------------------------------------------
@@ -128,6 +130,7 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
             return
 
         uid = str(interaction.user.id)
+        is_new_user = uid not in registered_users
         registered_users[uid] = {
             "username": username,
             "password": encrypted_password,
@@ -145,6 +148,15 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
             "You can use `/logincheck` to verify your credentials with the MCV website",
             ephemeral=True,
         )
+
+        # Best-effort — a closed-DMs user shouldn't have registration itself fail.
+        # Only a genuinely new registration gets this, not a credential update.
+        if is_new_user:
+            try:
+                for msg in RELEASE_MESSAGES:
+                    await interaction.user.send(msg)
+            except discord.HTTPException as exc:
+                log.info("Could not DM release notes to %s: %s", interaction.user.display_name, exc)
 
     @tree.command(name="unregister", description="Remove your saved credentials")
     async def cmd_unregister(interaction: discord.Interaction):
@@ -312,6 +324,86 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
         )
 
     # -------------------------------------------------------------------
+    # Homework Check
+    # -------------------------------------------------------------------
+    class HomeworkToggle(enum.Enum):
+        On = "on"
+        Off = "off"
+
+    @tree.command(
+        name="homework",
+        description="Enable or disable your daily homework reminder DM (MyCourseVille + ClassDeeDee)",
+    )
+    @app_commands.describe(action="Turn the daily homework check on or off")
+    async def cmd_homework(interaction: discord.Interaction, action: HomeworkToggle):
+        uid = str(interaction.user.id)
+        if uid not in registered_users:
+            await interaction.response.send_message(
+                "❌ You need to `/register` first.", ephemeral=True
+            )
+            return
+
+        if action == HomeworkToggle.On:
+            registered_users[uid]["homework_check"] = True
+            persist_users()
+            hour = registered_users[uid].get("homework_check_hour", DEFAULT_HOMEWORK_HOUR)
+            log.info("User %s enabled homework check", interaction.user.display_name)
+            await interaction.response.send_message(
+                f"✅ Daily homework check enabled — you'll get a DM around **{hour:02d}:00** (Bangkok time) "
+                "on any day you have outstanding work across MyCourseVille and ClassDeeDee.\n"
+                "Use `/homeworktime` to change when it arrives, or `/homeworkcheck` to run it right now.",
+                ephemeral=True,
+            )
+        else:
+            registered_users[uid]["homework_check"] = False
+            persist_users()
+            log.info("User %s disabled homework check", interaction.user.display_name)
+            await interaction.response.send_message(
+                "✅ Daily homework check disabled.", ephemeral=True
+            )
+
+    @tree.command(
+        name="homeworkcheck",
+        description="Run your homework check right now and DM the results (doesn't require /homework to be on)",
+    )
+    async def cmd_homeworkcheck(interaction: discord.Interaction):
+        uid = str(interaction.user.id)
+        if uid not in registered_users:
+            await interaction.response.send_message(
+                "❌ You need to `/register` first.", ephemeral=True
+            )
+            return
+
+        await interaction.response.send_message(
+            "⏳ Running your homework check now — check your DMs in a moment.", ephemeral=True
+        )
+        await run_homework_check_for_user(bot, homework_executor, uid)
+
+    @tree.command(
+        name="homeworktime",
+        description="Set what hour your daily homework reminder DM arrives",
+    )
+    @app_commands.describe(hour="Hour of day, 0-23, Bangkok time (e.g. 8 for 8am, 20 for 8pm)")
+    async def cmd_homeworktime(interaction: discord.Interaction, hour: app_commands.Range[int, 0, 23]):
+        uid = str(interaction.user.id)
+        if uid not in registered_users:
+            await interaction.response.send_message(
+                "❌ You need to `/register` first.", ephemeral=True
+            )
+            return
+
+        registered_users[uid]["homework_check_hour"] = hour
+        persist_users()
+        log.info("User %s set homework check hour to %d", interaction.user.display_name, hour)
+
+        enabled = registered_users[uid].get("homework_check", False)
+        note = "" if enabled else "\n⚠️ Your daily homework check is currently **off** — use `/homework on` to enable it."
+        await interaction.response.send_message(
+            f"✅ Homework reminder time set to **{hour:02d}:00** (Bangkok time).{note}",
+            ephemeral=True,
+        )
+
+    # -------------------------------------------------------------------
     # Help
     # -------------------------------------------------------------------
     @tree.command(name="help", description="Show all bot commands and how to use them")
@@ -345,6 +437,12 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
             "`/status` — Show bot uptime, registered users, and monitored channels\n"
             "`/leaderboard` — See who's posted the most attendance links\n"
             "\n"
+            "**Homework Check**\n"
+            "`/homework on` — Get a daily DM listing outstanding work (MyCourseVille + ClassDeeDee)\n"
+            "`/homework off` — Stop the daily DM\n"
+            "`/homeworktime <hour>` — Set what hour it arrives, 0-23 Bangkok time (default 8am)\n"
+            "`/homeworkcheck` — Run it once right now, without needing `/homework on` first\n"
+            "\n"
             "**How it works**\n"
             "When a MyCourseVille attendance link is posted in a monitored channel, "
             "the bot automatically opens it and checks in every registered user — or, if you've "
@@ -354,9 +452,19 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
             "Scanning a ClassDeeDee attendance QR (via `/scanner`) checks everyone in there too. "
             "If you registered with **CU Net** you already work on ClassDeeDee — nothing to do. "
             "If you registered a **MyCourseVille** account, add your ChulaSSO login once with "
-            "`/deedeeregister`, then `/deedeecheck` to confirm it.",
+            "`/deedeeregister`, then `/deedeecheck` to confirm it.\n"
+            "`/classdeedee off` — Skip ClassDeeDee entirely (check-in + homework), on by default. "
+            "`/classdeedee on` to re-enable.\n"
+            "\n"
+            "Use `/release` to see what's new in the latest version.",
             ephemeral=True,
         )
+
+    @tree.command(name="release", description="Show what's new in the latest version")
+    async def cmd_release(interaction: discord.Interaction):
+        await interaction.response.send_message(RELEASE_MESSAGES[0], ephemeral=True)
+        for msg in RELEASE_MESSAGES[1:]:
+            await interaction.followup.send(msg, ephemeral=True)
 
     # -------------------------------------------------------------------
     # Channel Management
@@ -502,6 +610,40 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
         else:
             await interaction.followup.send(
                 f"💥 **{display_name}** — error: {error}", ephemeral=True
+            )
+
+    class ClassDeeDeeToggle(enum.Enum):
+        On = "on"
+        Off = "off"
+
+    @tree.command(
+        name="classdeedee",
+        description="Enable or disable ClassDeeDee check-in and homework checks for your account (default: on)",
+    )
+    @app_commands.describe(action="Turn ClassDeeDee on or off for your account")
+    async def cmd_classdeedee(interaction: discord.Interaction, action: ClassDeeDeeToggle):
+        uid = str(interaction.user.id)
+        if uid not in registered_users:
+            await interaction.response.send_message(
+                "❌ You need to `/register` first.", ephemeral=True
+            )
+            return
+
+        enabled = action == ClassDeeDeeToggle.On
+        registered_users[uid]["classdeedee_enabled"] = enabled
+        persist_users()
+        log.info("User %s turned ClassDeeDee %s", interaction.user.display_name, "on" if enabled else "off")
+
+        if enabled:
+            await interaction.response.send_message(
+                "✅ ClassDeeDee re-enabled — you'll be included in ClassDeeDee QR check-ins and homework checks again.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message(
+                "✅ ClassDeeDee disabled — your account will be skipped for ClassDeeDee QR check-ins and homework "
+                "checks (MyCourseVille is unaffected). Use `/classdeedee on` to turn it back on.",
+                ephemeral=True,
             )
 
     @tree.command(

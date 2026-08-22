@@ -5,12 +5,14 @@ from concurrent.futures import ThreadPoolExecutor
 
 import discord
 from discord import app_commands
+from discord.ext import tasks
 
 from attendance_bot.config import (
     log,
     BOT_VERSION,
     DISCORD_TOKEN,
     SCAN_SECRET,
+    HOMEWORK_CONCURRENCY,
     monitored_channels,
     registered_users,
     is_duplicate_link,
@@ -25,6 +27,7 @@ from attendance_bot.mcv.attendance import (
 )
 from attendance_bot.scanner.webserver import start_web_server
 from attendance_bot.classdeedee.attendance import check_in_all as cdd_check_in_all
+from attendance_bot.homework.dm import handle_homework_button, run_homework_scheduler_tick
 from attendance_bot import commands
 
 # ---------------------------------------------------------------------------
@@ -43,12 +46,28 @@ class AttendanceBot(discord.Client):
         else:
             log.info("SCAN_SECRET not set — QR scanner web server disabled")
 
+        homework_scheduler_loop.start()
+
 
 bot = AttendanceBot(intents=intents)
 tree = app_commands.CommandTree(bot)
 attendance = AttendanceLogger()
 bot_start_time = datetime.now(timezone.utc)
 executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="checkin_")
+
+# Separate, low-concurrency pool for the homework check — unlike ClassDeeDee
+# check-in there's no nonce window forcing everyone in at once, so this stays
+# small by default to be gentle on ChulaSSO/MCV (see config.HOMEWORK_CONCURRENCY).
+homework_executor = ThreadPoolExecutor(max_workers=HOMEWORK_CONCURRENCY, thread_name_prefix="hw_")
+
+@tasks.loop(minutes=15)
+async def homework_scheduler_loop():
+    await run_homework_scheduler_tick(bot, homework_executor)
+
+
+@homework_scheduler_loop.before_loop
+async def _before_homework_scheduler_loop():
+    await bot.wait_until_ready()
 
 # asyncio only holds a weak reference to a running task, so a fire-and-forget
 # task can be garbage-collected mid-flight. Parking them here keeps them alive
@@ -63,7 +82,7 @@ def _spawn(coro) -> asyncio.Task:
     return task
 
 # Register all slash commands and get helpers back
-run_check_in_async, dm_results = commands.setup(bot, tree, attendance, executor, bot_start_time)
+run_check_in_async, dm_results = commands.setup(bot, tree, attendance, executor, bot_start_time, homework_executor)
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +220,16 @@ async def on_ready():
     log.info("Slash commands synced")
     log.info("Monitoring channels: %s", monitored_channels or "(none)")
     log.info("Registered users: %d", len(registered_users))
+
+
+@bot.event
+async def on_interaction(interaction: discord.Interaction):
+    # discord.py routes app-command and component interactions itself
+    # (CommandTree, view stores) regardless of this handler — dispatch('interaction', ...)
+    # fires unconditionally alongside that, which is what lands here. Not a
+    # View callback — see homework/dm.py's module docstring for why a click
+    # needs to keep working even after a restart.
+    await handle_homework_button(interaction)
 
 
 @bot.event
