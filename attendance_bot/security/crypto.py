@@ -41,7 +41,7 @@ def get_encryption_key() -> bytes:
     if not key_str:
         raise ValueError(
             "ENCRYPTION_KEY environment variable not set. "
-            "Generate one with: python -c 'from password_crypto import generate_key; print(generate_key())' "
+            "Generate one with: python -c 'from attendance_bot.security.crypto import generate_key; print(generate_key())' "
             "then set it in your environment or fly.io secrets."
         )
 
@@ -52,7 +52,7 @@ def get_encryption_key() -> bytes:
         if len(key_str) != 44:
             raise ValueError(
                 f"Invalid ENCRYPTION_KEY length (expected 44 chars, got {len(key_str)}). "
-                "Generate a new key with: python -c 'from password_crypto import generate_key; print(generate_key())'"
+                "Generate a new key with: python -c 'from attendance_bot.security.crypto import generate_key; print(generate_key())'"
             )
         return key_bytes
     except Exception as e:
@@ -219,5 +219,5 @@ if __name__ == "__main__":
         print(f"Match: {test_pwd == dec}")
     else:
         print("Usage:")
-        print("  python password_crypto.py generate-key  # Generate a new key")
-        print("  python password_crypto.py test          # Test encryption")
+        print("  python -m attendance_bot.security.crypto generate-key  # Generate a new key")
+        print("  python -m attendance_bot.security.crypto test          # Test encryption")

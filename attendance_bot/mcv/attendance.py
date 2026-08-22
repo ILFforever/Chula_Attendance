@@ -5,8 +5,8 @@ from urllib.parse import urljoin
 import requests as http_requests
 from bs4 import BeautifulSoup
 
-from config import log, registered_users
-from password_crypto import decrypt_password
+from attendance_bot.config import log, registered_users
+from attendance_bot.security.crypto import decrypt_password
 
 # ---------------------------------------------------------------------------
 # URL patterns

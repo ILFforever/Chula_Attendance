@@ -99,7 +99,7 @@ Use `/deedeecheck` any time to confirm your ClassDeeDee login works (it echoes b
 pip install -r requirements.txt
 export DISCORD_TOKEN="your-token"
 export ENCRYPTION_KEY="your-key"
-python bot.py
+python main.py
 ```
 
 ### Deploy to Fly.io
@@ -116,6 +116,6 @@ Pushes to `main` auto-deploy via GitHub Actions.
 
 The bot uses lightweight HTTP requests (`requests` + `BeautifulSoup`) instead of a headless browser, keeping RAM usage under 256 MB on Fly.io.
 
-- **MyCourseVille** check-in logs in via MCV's OAuth/SSO form ([attendance.py](attendance.py)).
-- **ClassDeeDee** check-in logs in via ChulaSSO's CAS ticket flow ([classdeedee_login.py](classdeedee_login.py)) and posts attendance ([classdeedee_attendance.py](classdeedee_attendance.py)); logins run concurrently but bounded by `CDD_CHECKIN_CONCURRENCY` to stay inside the ~8 s QR nonce window without spiking memory.
-- The shared phone QR scanner ([webserver.py](webserver.py) + [web/scan.html](web/scan.html)) decodes on-device and routes MCV links and ClassDeeDee QRs to the right handler.
+- **MyCourseVille** check-in logs in via MCV's OAuth/SSO form ([attendance_bot/mcv/attendance.py](attendance_bot/mcv/attendance.py)).
+- **ClassDeeDee** check-in logs in via ChulaSSO's CAS ticket flow ([attendance_bot/classdeedee/login.py](attendance_bot/classdeedee/login.py)) and posts attendance ([attendance_bot/classdeedee/attendance.py](attendance_bot/classdeedee/attendance.py)); logins run concurrently but bounded by `CDD_CHECKIN_CONCURRENCY` to stay inside the ~8 s QR nonce window without spiking memory.
+- The shared phone QR scanner ([attendance_bot/scanner/webserver.py](attendance_bot/scanner/webserver.py) + [web/scan.html](web/scan.html)) decodes on-device and routes MCV links and ClassDeeDee QRs to the right handler.

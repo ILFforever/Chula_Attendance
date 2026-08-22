@@ -26,10 +26,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests as http_requests
 
-from config import log, registered_users
-from password_crypto import decrypt_password
-from attendance import TZ_BANGKOK
-from classdeedee_login import (
+from attendance_bot.config import log, registered_users
+from attendance_bot.security.crypto import decrypt_password
+from attendance_bot.mcv.attendance import TZ_BANGKOK
+from attendance_bot.classdeedee.login import (
     login_classdeedee,
     CDD,
     REQUEST_TIMEOUT,

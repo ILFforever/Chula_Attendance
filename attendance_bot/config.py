@@ -6,7 +6,7 @@ from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 load_dotenv()
 
-from password_crypto import migrate_plaintext_to_encrypted
+from attendance_bot.security.crypto import migrate_plaintext_to_encrypted
 
 # ---------------------------------------------------------------------------
 # Logging

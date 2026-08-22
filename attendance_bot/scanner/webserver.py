@@ -15,11 +15,13 @@ import os
 
 from aiohttp import web
 
-from config import log, SCAN_SECRET, WEB_PORT
-from attendance import extract_attendance_url
-from classdeedee_attendance import parse_attendance_qr
+from attendance_bot.config import log, SCAN_SECRET, WEB_PORT
+from attendance_bot.mcv.attendance import extract_attendance_url
+from attendance_bot.classdeedee.attendance import parse_attendance_qr
 
-WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
+# repo_root/attendance_bot/scanner/webserver.py -> repo_root/web
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+WEB_DIR = os.path.join(REPO_ROOT, "web")
 
 # Only one scan is processed at a time — check_in_all runs on a single-worker
 # executor anyway, and this keeps an impatient double-tap from queueing up

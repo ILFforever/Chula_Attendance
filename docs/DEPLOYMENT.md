@@ -20,7 +20,7 @@ pip install -r requirements.txt
 
 ### 2. Generate an encryption key
 ```bash
-python password_crypto.py generate-key
+python -m attendance_bot.security.crypto generate-key
 ```
 
 Example output:
@@ -48,7 +48,7 @@ export ENCRYPTION_KEY="xK3j9mP2vR8nQ4wL7tY6hJ5fD3gS1zN2bV0cX9aZ="
 
 ### 4. Run the bot
 ```bash
-python bot.py
+python main.py
 ```
 
 ## fly.io Deployment
@@ -57,7 +57,7 @@ python bot.py
 
 Generate a key (you only need to do this once):
 ```bash
-python password_crypto.py generate-key
+python -m attendance_bot.security.crypto generate-key
 ```
 
 Set it as a fly.io secret:
@@ -164,7 +164,7 @@ Plaintext passwords (before encryption):
 ## Troubleshooting
 
 ### Error: "ENCRYPTION_KEY environment variable not set"
-- Generate a key: `python password_crypto.py generate-key`
+- Generate a key: `python -m attendance_bot.security.crypto generate-key`
 - Set it in your environment or fly.io secrets
 
 ### Error: "Failed to decrypt password"

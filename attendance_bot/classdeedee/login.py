@@ -24,9 +24,9 @@ Flow (reverse-engineered from the ChulaSSO + ClassDeeDee JS bundles):
 After step 4 the returned requests.Session is authenticated to ClassDeeDee.
 
 Usage:
-    CDD_USERNAME=6xxxxxxx21 CDD_PASSWORD='...' python classdeedee_login.py
+    CDD_USERNAME=6xxxxxxx21 CDD_PASSWORD='...' python -m attendance_bot.classdeedee.login
     # or reuse a registered bot user (needs ENCRYPTION_KEY + users.json):
-    python classdeedee_login.py --uid <discord_user_id>
+    python -m attendance_bot.classdeedee.login --uid <discord_user_id>
 """
 from __future__ import annotations
 
@@ -252,8 +252,8 @@ def full_name(profile: dict) -> str:
 # ---------------------------------------------------------------------------
 def _resolve_credentials(uid: str | None) -> tuple[str, str]:
     if uid:
-        from config import registered_users
-        from password_crypto import decrypt_password
+        from attendance_bot.config import registered_users
+        from attendance_bot.security.crypto import decrypt_password
         info = registered_users.get(uid)
         if not info:
             raise SystemExit(f"No registered user with uid {uid!r} in users.json")

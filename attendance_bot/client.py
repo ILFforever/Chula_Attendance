@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 import discord
 from discord import app_commands
 
-from config import (
+from attendance_bot.config import (
     log,
     BOT_VERSION,
     DISCORD_TOKEN,
@@ -17,15 +17,15 @@ from config import (
     mark_link_seen,
     record_leaderboard_post,
 )
-from attendance import (
+from attendance_bot.mcv.attendance import (
     AttendanceLogger,
     MCV_URL_PARTIAL,
     extract_attendance_url,
     fetch_public_course_info,
 )
-from webserver import start_web_server
-from classdeedee_attendance import check_in_all as cdd_check_in_all
-import commands
+from attendance_bot.scanner.webserver import start_web_server
+from attendance_bot.classdeedee.attendance import check_in_all as cdd_check_in_all
+from attendance_bot import commands
 
 # ---------------------------------------------------------------------------
 # Discord Bot
@@ -235,21 +235,3 @@ async def on_message(message: discord.Message):
             "❌ Incomplete attendance link — missing check-in code. "
             "The URL should look like: `.../attendance_qr_selfcheck/<id>/<code>`"
         )
-
-
-# ---------------------------------------------------------------------------
-# Entry Point
-# ---------------------------------------------------------------------------
-if __name__ == "__main__":
-    if not DISCORD_TOKEN:
-        log.error("DISCORD_TOKEN environment variable is not set!")
-        raise SystemExit(1)
-    if not monitored_channels:
-        log.warning("No channels configured – use /monitor in Discord to add one")
-    if not registered_users:
-        log.warning("No users registered – use /register in Discord to add credentials")
-
-    try:
-        bot.run(DISCORD_TOKEN, log_handler=None)
-    finally:
-        attendance.cleanup()

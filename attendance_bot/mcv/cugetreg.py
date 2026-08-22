@@ -3,7 +3,7 @@ import re
 import requests as http_requests
 from bs4 import BeautifulSoup
 
-from config import log
+from attendance_bot.config import log
 
 COURSE_URL = "https://cugetreg.com/S/courses/{course_id}"
 REQUEST_TIMEOUT = 15

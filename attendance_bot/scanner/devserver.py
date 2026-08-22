@@ -1,7 +1,7 @@
 """Local test harness for the QR scanner — no Discord token needed.
 
-    python devserver.py           # http://localhost:8080/scan  (desktop webcam)
-    python devserver.py --https   # https://<your-LAN-IP>:8443  (phone camera)
+    python -m attendance_bot.scanner.devserver           # http://localhost:8080/scan  (desktop webcam)
+    python -m attendance_bot.scanner.devserver --https   # https://<your-LAN-IP>:8443  (phone camera)
 
 Scanned links are printed to the console instead of triggering a real check-in,
 so you can point a phone at a QR code and watch what the bot would receive.
@@ -27,8 +27,8 @@ import tempfile
 # Must be set before webserver/config are imported — they read env at import.
 os.environ.setdefault("SCAN_SECRET", "devsecret")
 
-from webserver import start_web_server  # noqa: E402
-from config import SCAN_SECRET, log  # noqa: E402
+from attendance_bot.scanner.webserver import start_web_server  # noqa: E402
+from attendance_bot.config import SCAN_SECRET, log  # noqa: E402
 
 
 def lan_ip() -> str:

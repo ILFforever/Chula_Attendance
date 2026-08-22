@@ -7,7 +7,7 @@ import discord
 from discord import app_commands
 import requests as http_requests
 
-from config import (
+from attendance_bot.config import (
     log,
     BOT_VERSION,
     registered_users,
@@ -18,22 +18,22 @@ from config import (
     SCAN_SECRET,
     SCAN_BASE_URL,
 )
-from password_crypto import encrypt_password, decrypt_password
-from attendance import (
+from attendance_bot.security.crypto import encrypt_password, decrypt_password
+from attendance_bot.mcv.attendance import (
     MCV_URL_PATTERN,
     WrongCredentialsError,
     LoginError,
     fetch_public_course_info,
 )
-from classdeedee_login import (
+from attendance_bot.classdeedee.login import (
     login_classdeedee,
     fetch_profile,
     full_name,
     WrongCredentialsError as CddWrongCredentialsError,
     LoginError as CddLoginError,
 )
-from classdeedee_attendance import bench_logins, resolve_cdd_credentials
-from cugetreg import fetch_course_name
+from attendance_bot.classdeedee.attendance import bench_logins, resolve_cdd_credentials
+from attendance_bot.mcv.cugetreg import fetch_course_name
 
 
 def _parse_course_id(raw: str) -> str | None:
@@ -412,7 +412,7 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
     @tree.command(name="checkin", description="Manually trigger check-in with an attendance URL")
     @app_commands.describe(url="MyCourseVille attendance URL")
     async def cmd_checkin(interaction: discord.Interaction, url: str):
-        from attendance import MCV_URL_PARTIAL
+        from attendance_bot.mcv.attendance import MCV_URL_PARTIAL
 
         if not MCV_URL_PATTERN.search(url):
             if MCV_URL_PARTIAL.search(url):
