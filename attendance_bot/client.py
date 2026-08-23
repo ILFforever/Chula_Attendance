@@ -1,6 +1,6 @@
 import asyncio
 import time
-from datetime import datetime, timezone
+from datetime import datetime, time as dt_time, timezone
 from concurrent.futures import ThreadPoolExecutor
 
 import discord
@@ -22,6 +22,7 @@ from attendance_bot.config import (
 from attendance_bot.mcv.attendance import (
     AttendanceLogger,
     MCV_URL_PARTIAL,
+    TZ_BANGKOK,
     extract_attendance_url,
     fetch_public_course_info,
 )
@@ -48,6 +49,7 @@ class AttendanceBot(discord.Client):
             log.info("SCAN_SECRET not set — QR scanner web server disabled")
 
         homework_scheduler_loop.start()
+        deadline_reminder_loop.start()
 
 
 bot = AttendanceBot(intents=intents)
@@ -61,15 +63,39 @@ executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="checkin_")
 # small by default to be gentle on ChulaSSO/MCV (see config.HOMEWORK_CONCURRENCY).
 homework_executor = ThreadPoolExecutor(max_workers=HOMEWORK_CONCURRENCY, thread_name_prefix="hw_")
 
-@tasks.loop(minutes=15)
+# `tasks.loop(minutes=15)` runs relative to whenever the bot happened to
+# become ready — not aligned to the wall clock — so a user who set
+# /homeworktime 8 could get their DM anywhere from 8:00 to 8:59 depending on
+# the process's restart offset (this is what caused a report of "set to
+# 7:00, arrived at 7:45"). Pinning this loop to `time=` instead makes it
+# fire at exactly :00 past every hour, Bangkok time, regardless of restarts.
+_HOURLY_BANGKOK_TIMES = [dt_time(hour=h, minute=0, tzinfo=TZ_BANGKOK) for h in range(24)]
+
+# Same reasoning, same fix, applied to the deadline-reminder scan too — pinned
+# to fixed quarter-hour checkpoints (Bangkok time) instead of a relative
+# cadence, so its timing is predictable and independent of restarts as well.
+_QUARTER_HOURLY_BANGKOK_TIMES = [
+    dt_time(hour=h, minute=m, tzinfo=TZ_BANGKOK) for h in range(24) for m in (0, 15, 30, 45)
+]
+
+
+@tasks.loop(time=_HOURLY_BANGKOK_TIMES)
 async def homework_scheduler_loop():
     await run_homework_scheduler_tick(bot, homework_executor)
-    # No platform login involved — pure cache scan, safe to run every tick.
-    await run_deadline_reminder_tick(bot)
 
 
 @homework_scheduler_loop.before_loop
 async def _before_homework_scheduler_loop():
+    await bot.wait_until_ready()
+
+
+@tasks.loop(time=_QUARTER_HOURLY_BANGKOK_TIMES)
+async def deadline_reminder_loop():
+    await run_deadline_reminder_tick(bot)
+
+
+@deadline_reminder_loop.before_loop
+async def _before_deadline_reminder_loop():
     await bot.wait_until_ready()
 
 # asyncio only holds a weak reference to a running task, so a fire-and-forget
