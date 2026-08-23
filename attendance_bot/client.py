@@ -212,23 +212,21 @@ async def handle_web_scan_cdd(sid: str, nonce: str, channel_id: int | None = Non
 # ---------------------------------------------------------------------------
 @bot.event
 async def on_ready():
-    # All commands are declared without `guild=`, so they live in the tree's
-    # global scope by default — copy_global_to() below just copies that
-    # in-memory definition into each guild's scope, it never touches
-    # Discord's actual global command registration. If this bot (or an
-    # earlier version of it) ever ran a plain `tree.sync()` with no guild,
-    # Discord keeps those global commands registered forever until
-    # something explicitly clears them — which shows up as duplicates
-    # (one global + one guild-scoped) in every server's command list.
-    # Clearing + syncing an empty global list is a cheap no-op once nothing
-    # global remains, so this is safe to leave in permanently rather than
-    # only running it once.
-    for guild in bot.guilds:
-        tree.copy_global_to(guild=guild)
-    tree.clear_commands(guild=None)
+    # Global sync only — no per-guild copy_global_to()/sync(guild=...).
+    # Two reasons:
+    #  1. Mixing global and per-guild registration for the same commands is
+    #     exactly what caused a duplicate-command bug (Discord shows both
+    #     the global entry and the guild-scoped copy). Picking one strategy
+    #     avoids that permanently.
+    #  2. Some commands are now DM/user-installable (see the
+    #     allowed_installs/allowed_contexts decorators throughout
+    #     commands.py) — that requires global registration, since a DM
+    #     isn't tied to any guild a guild-scoped command could live in.
+    # Trade-off: new/changed commands can take up to ~1 hour to propagate
+    # globally (existing, unchanged commands are unaffected) — acceptable
+    # for a bot whose command set doesn't change every restart, unlike the
+    # per-guild path this replaces which updated instantly.
     await tree.sync()
-    for guild in bot.guilds:
-        await tree.sync(guild=guild)
     await bot.change_presence(activity=discord.Activity(
         type=discord.ActivityType.watching,
         name=f"👀 for attendance links | v{BOT_VERSION} | 🔗 github.com/ILFforever/Chula_Attendance",

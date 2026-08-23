@@ -107,6 +107,8 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
         MyCourseVille = "platform"
 
     @tree.command(name="register", description="Register your MyCourseVille credentials")
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     @app_commands.describe(
         login_method="How you log in: CU Net account or MyCourseVille platform account",
         username="Your MyCourseVille / university username",
@@ -166,6 +168,8 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
                 log.info("Could not DM release notes to %s: %s", interaction.user.display_name, exc)
 
     @tree.command(name="unregister", description="Remove your saved credentials")
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def cmd_unregister(interaction: discord.Interaction):
         uid = str(interaction.user.id)
         if uid not in registered_users:
@@ -182,6 +186,8 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
         )
 
     @tree.command(name="users", description="List all registered users")
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def cmd_users(interaction: discord.Interaction):
         if not registered_users:
             await interaction.response.send_message(
@@ -202,6 +208,8 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
     # Subject / Course Enrollment
     # -------------------------------------------------------------------
     @tree.command(name="enroll", description="Enroll in a course so you're only checked in for its attendance links")
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     @app_commands.describe(course_id="Your course code (e.g. 2110405, from CU Get Reg / your registration), or paste an MCV link")
     async def cmd_enroll(interaction: discord.Interaction, course_id: str):
         uid = str(interaction.user.id)
@@ -253,6 +261,8 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
         )
 
     @tree.command(name="unenroll", description="Remove a course from your enrollment list")
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     @app_commands.describe(course_id="Course code to remove, exactly as you entered it with /enroll")
     async def cmd_unenroll(interaction: discord.Interaction, course_id: str):
         uid = str(interaction.user.id)
@@ -281,6 +291,8 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
         await interaction.response.send_message(message, ephemeral=True)
 
     @tree.command(name="unenrollall", description="Remove every course from your enrollment list")
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def cmd_unenrollall(interaction: discord.Interaction):
         uid = str(interaction.user.id)
         if uid not in registered_users:
@@ -306,6 +318,8 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
         )
 
     @tree.command(name="subjects", description="List the courses you're enrolled in for check-in filtering")
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def cmd_subjects(interaction: discord.Interaction):
         uid = str(interaction.user.id)
         if uid not in registered_users:
@@ -341,6 +355,8 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
         name="homework",
         description="Enable or disable your daily homework reminder DM (MyCourseVille + ClassDeeDee)",
     )
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     @app_commands.describe(action="Turn the daily homework check on or off")
     async def cmd_homework(interaction: discord.Interaction, action: HomeworkToggle):
         uid = str(interaction.user.id)
@@ -376,6 +392,8 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
         name="homeworkcheck",
         description="Run your homework check right now and DM the results (doesn't require /homework to be on)",
     )
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def cmd_homeworkcheck(interaction: discord.Interaction):
         uid = str(interaction.user.id)
         if uid not in registered_users:
@@ -393,6 +411,8 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
         name="homeworktime",
         description="Set what hour your daily homework reminder DM arrives",
     )
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     @app_commands.describe(hour="Hour of day, 0-23, Bangkok time (e.g. 8 for 8am, 20 for 8pm)")
     async def cmd_homeworktime(interaction: discord.Interaction, hour: app_commands.Range[int, 0, 23]):
         uid = str(interaction.user.id)
@@ -417,6 +437,8 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
         name="deadlinereminder",
         description="Enable or disable a heads-up DM shortly before an unfinished item is due (off by default)",
     )
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     @app_commands.describe(action="Turn the deadline reminder on or off")
     async def cmd_deadlinereminder(interaction: discord.Interaction, action: HomeworkToggle):
         uid = str(interaction.user.id)
@@ -451,6 +473,8 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
         name="deadlinereminderhours",
         description="Set how many hours before something's due the deadline reminder DM arrives",
     )
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     @app_commands.describe(
         hours=f"Hours before due time, {MIN_DEADLINE_REMINDER_HOURS}-{MAX_DEADLINE_REMINDER_HOURS} (default {DEFAULT_DEADLINE_REMINDER_HOURS})"
     )
@@ -480,6 +504,8 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
         name="settings",
         description="Open your settings panel — notifications and course enrollment, all in one place",
     )
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def cmd_settings(interaction: discord.Interaction):
         uid = str(interaction.user.id)
         if uid not in registered_users:
@@ -493,6 +519,8 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
     # Help
     # -------------------------------------------------------------------
     @tree.command(name="help", description="Show all bot commands and how to use them")
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def cmd_help(interaction: discord.Interaction):
         # Split across several messages — the full command list grew past
         # Discord's 2000-char single-message limit (a plain send_message()
@@ -565,6 +593,8 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
             await interaction.followup.send(part, ephemeral=True)
 
     @tree.command(name="release", description="Show what's new in the latest version")
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def cmd_release(interaction: discord.Interaction):
         await interaction.response.send_message(RELEASE_MESSAGES[0], ephemeral=True)
         for msg in RELEASE_MESSAGES[1:]:
@@ -622,6 +652,8 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
     # Attendance & Status
     # -------------------------------------------------------------------
     @tree.command(name="checkin", description="Manually trigger check-in with an attendance URL")
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     @app_commands.describe(url="MyCourseVille attendance URL")
     async def cmd_checkin(interaction: discord.Interaction, url: str):
         from attendance_bot.mcv.attendance import MCV_URL_PARTIAL
@@ -660,6 +692,8 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
         name="autocheckin",
         description="Enable or disable automatic attendance check-in for your account (default: on)",
     )
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     @app_commands.describe(action="Turn automatic check-in on or off")
     async def cmd_autocheckin(interaction: discord.Interaction, action: AutoCheckinToggle):
         uid = str(interaction.user.id)
@@ -688,6 +722,8 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
             )
 
     @tree.command(name="logincheck", description="Test if your saved credentials can log in")
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def cmd_logincheck(interaction: discord.Interaction):
         uid = str(interaction.user.id)
         if uid not in registered_users:
@@ -759,6 +795,8 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
         name="classdeedee",
         description="Enable/disable ClassDeeDee check-in and homework together (default: on; see /settings for separate)",
     )
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     @app_commands.describe(action="Turn ClassDeeDee on or off for your account")
     async def cmd_classdeedee(interaction: discord.Interaction, action: ClassDeeDeeToggle):
         uid = str(interaction.user.id)
@@ -794,6 +832,8 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
         name="deedeeregister",
         description="Add a ClassDeeDee (ChulaSSO) login — only required if you registered with a MyCourseVille account",
     )
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     @app_commands.describe(
         username="Your ChulaSSO login (10-digit student ID)",
         password="Your ChulaSSO / CU IT (email) password",
@@ -889,6 +929,8 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
         name="deedeeunregister",
         description="Remove your separate ClassDeeDee (ChulaSSO) login, keeping your MyCourseVille account",
     )
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def cmd_deedeeunregister(interaction: discord.Interaction):
         uid = str(interaction.user.id)
         if uid not in registered_users:
@@ -928,6 +970,8 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
         )
 
     @tree.command(name="deedeecheck", description="Test if your saved credentials can log into ClassDeeDee")
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def cmd_deedeecheck(interaction: discord.Interaction):
         uid = str(interaction.user.id)
         if uid not in registered_users:
@@ -1053,6 +1097,8 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
         await interaction.followup.send("\n".join(lines), ephemeral=True)
 
     @tree.command(name="status", description="Show bot uptime and status")
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def cmd_status(interaction: discord.Interaction):
         from datetime import datetime, timezone
         uptime = datetime.now(timezone.utc) - bot_start_time
@@ -1076,6 +1122,8 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
         )
 
     @tree.command(name="scanner", description="DM yourself a link to the on-device QR scanner")
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def cmd_scanner(interaction: discord.Interaction):
         if not SCAN_SECRET or not SCAN_BASE_URL:
             await interaction.response.send_message(
@@ -1084,10 +1132,13 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
             )
             return
 
-        # Encode the channel this was run in, so scan results post back here.
-        # (Fragment, so the channel id never hits the server access log either.)
-        channel_id = interaction.channel_id
-        link = f"{SCAN_BASE_URL}/scan#t={SCAN_SECRET}&c={channel_id}"
+        # Encode the channel this was run in, so scan results post back here —
+        # only meaningful for a real guild text channel; bot.get_channel()
+        # never resolves a DM channel for posting, so a DM/private-channel
+        # run just gets the DM-only fallback (see handle_web_scan).
+        in_guild_channel = interaction.guild is not None
+        channel_id = interaction.channel_id if in_guild_channel else None
+        link = f"{SCAN_BASE_URL}/scan#t={SCAN_SECRET}&c={channel_id or ''}"
         where = f"posted in <#{channel_id}> (and DMed to each user)" if channel_id else "DMed to each user"
         await interaction.response.send_message(
             f"📷 **Attendance QR Scanner**\n"
@@ -1102,6 +1153,8 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
         )
 
     @tree.command(name="leaderboard", description="See who's posted the most attendance links")
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def cmd_leaderboard(interaction: discord.Interaction):
         if not leaderboard_counts:
             await interaction.response.send_message(
