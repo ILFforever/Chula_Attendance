@@ -212,8 +212,22 @@ async def handle_web_scan_cdd(sid: str, nonce: str, channel_id: int | None = Non
 # ---------------------------------------------------------------------------
 @bot.event
 async def on_ready():
+    # All commands are declared without `guild=`, so they live in the tree's
+    # global scope by default — copy_global_to() below just copies that
+    # in-memory definition into each guild's scope, it never touches
+    # Discord's actual global command registration. If this bot (or an
+    # earlier version of it) ever ran a plain `tree.sync()` with no guild,
+    # Discord keeps those global commands registered forever until
+    # something explicitly clears them — which shows up as duplicates
+    # (one global + one guild-scoped) in every server's command list.
+    # Clearing + syncing an empty global list is a cheap no-op once nothing
+    # global remains, so this is safe to leave in permanently rather than
+    # only running it once.
     for guild in bot.guilds:
         tree.copy_global_to(guild=guild)
+    tree.clear_commands(guild=None)
+    await tree.sync()
+    for guild in bot.guilds:
         await tree.sync(guild=guild)
     await bot.change_presence(activity=discord.Activity(
         type=discord.ActivityType.watching,
