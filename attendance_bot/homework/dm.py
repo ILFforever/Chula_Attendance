@@ -511,14 +511,19 @@ async def run_homework_check_for_user(bot: discord.Client, executor, uid: str) -
 
 
 async def run_homework_scheduler_tick(bot: discord.Client, executor) -> None:
-    """Called on every scheduler tick (see client.py's tasks.loop). Runs the
-    check for whichever opted-in users' preferred hour matches right now, and
-    haven't already run today — so a 15-minute tick cadence doesn't double-send.
+    """Called on every scheduler tick — client.py's homework_scheduler_loop
+    fires exactly once per hour (pinned to fixed Bangkok-time checkpoints),
+    so matching a user's target hour against the current hour already sends
+    each user at most once a day without any extra bookkeeping. No
+    "already ran today" guard: one used to sit here, but it caused a worse
+    problem than the one it prevented — moving your digest hour later the
+    same day (or a transient login failure marking the day as "done" with
+    nothing actually sent) silently ate the rest of the day with no way to
+    tell from the user's side. A duplicate send from this loop firing twice
+    in the same hour isn't realistically possible (see the loop's own
+    docstring in client.py), so there's nothing left worth guarding against.
     """
-    from attendance_bot.config import homework_already_ran_today, mark_homework_ran_today
-
     now = datetime.now(TZ_BANGKOK)
-    today_str = now.strftime("%Y-%m-%d")
 
     due_uids = []
     for uid, info in registered_users.items():
@@ -527,9 +532,6 @@ async def run_homework_scheduler_tick(bot: discord.Client, executor) -> None:
         target_hour = info.get("homework_check_hour", DEFAULT_HOMEWORK_HOUR)
         if target_hour != now.hour:
             continue
-        if homework_already_ran_today(uid, today_str):
-            continue
-        mark_homework_ran_today(uid, today_str)  # mark first — avoids a double-run if this tick overlaps another
         due_uids.append(uid)
 
     if not due_uids:

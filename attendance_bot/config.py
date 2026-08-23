@@ -85,8 +85,6 @@ seen_links: dict[str, str] = _leaderboard_data.get("seen_links", {})
 # Homework check — persisted in homework.json
 # "suppressed": { "uid:platform:course_code:item_key": "iso_timestamp_marked" }
 #   — assignments a user clicked "Handed in" on; skipped until pruned.
-# "last_run": { "discord_user_id": "YYYY-MM-DD" } (Bangkok-local date) — guards
-#   the hourly scheduler tick from re-sending the same user's DM twice in one day.
 # "deadlines": { "uid:platform:course_code:item_key": {"due_dt": iso, "deadline_reminded": bool, ...} }
 #   — cache of each outstanding item's resolved due time, refreshed on every
 #   daily/manual homework check. Drives the opt-in "deadline approaching"
@@ -95,7 +93,6 @@ seen_links: dict[str, str] = _leaderboard_data.get("seen_links", {})
 #   homework/dm.py's run_deadline_reminder_tick.
 _homework_data = load_json(HOMEWORK_FILE)
 homework_suppressed: dict[str, str] = _homework_data.get("suppressed", {})
-homework_last_run: dict[str, str] = _homework_data.get("last_run", {})
 homework_deadlines: dict[str, dict] = _homework_data.get("deadlines", {})
 
 
@@ -137,7 +134,6 @@ def persist_leaderboard():
 def persist_homework():
     save_json(HOMEWORK_FILE, {
         "suppressed": homework_suppressed,
-        "last_run": homework_last_run,
         "deadlines": homework_deadlines,
     })
 
@@ -243,15 +239,6 @@ def unmark_homework_suppressed(storage_key: str) -> bool:
         persist_homework()
         return True
     return False
-
-
-def homework_already_ran_today(uid: str, today_str: str) -> bool:
-    return homework_last_run.get(uid) == today_str
-
-
-def mark_homework_ran_today(uid: str, today_str: str):
-    homework_last_run[uid] = today_str
-    persist_homework()
 
 
 # ---------------------------------------------------------------------------
