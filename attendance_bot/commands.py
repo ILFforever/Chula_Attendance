@@ -518,6 +518,7 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
             "**Attendance**\n"
             "`/checkin <url>` — Manually trigger check-in with a MyCourseVille attendance URL\n"
             "`/scanner` — DM yourself a phone-camera QR scanner that checks everyone in\n"
+            "`/autocheckin off` — Stop being auto checked-in (MyCourseVille + ClassDeeDee); Homework Check is unaffected\n"
             "`/logincheck` — Test if your saved credentials can log in\n"
             "`/deedeecheck` — Test if your saved credentials can log into ClassDeeDee (ChulaSSO)\n"
             "`/deedeebench` — (temp) Benchmark logging in all users to ClassDeeDee (timing & RAM)\n"
@@ -642,6 +643,41 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
         await interaction.followup.send(results_header + "\n".join(r for _, r in results))
         await dm_results(results, course_info["title"] if course_info else None)
 
+    class AutoCheckinToggle(enum.Enum):
+        On = "on"
+        Off = "off"
+
+    @tree.command(
+        name="autocheckin",
+        description="Enable or disable automatic attendance check-in for your account (default: on)",
+    )
+    @app_commands.describe(action="Turn automatic check-in on or off")
+    async def cmd_autocheckin(interaction: discord.Interaction, action: AutoCheckinToggle):
+        uid = str(interaction.user.id)
+        if uid not in registered_users:
+            await interaction.response.send_message(
+                "❌ You need to `/register` first.", ephemeral=True
+            )
+            return
+
+        enabled = action == AutoCheckinToggle.On
+        registered_users[uid]["checkin_enabled"] = enabled
+        persist_users()
+        log.info("User %s turned automatic check-in %s", interaction.user.display_name, "on" if enabled else "off")
+
+        if enabled:
+            await interaction.response.send_message(
+                "✅ Automatic check-in re-enabled — you'll be checked in again when an attendance link/QR is posted.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message(
+                "✅ Automatic check-in disabled — the bot will no longer log in and check you into attendance "
+                "links or QRs. Homework Check is unaffected (it only reads your outstanding work, never submits "
+                "anything). Use `/autocheckin on` to turn it back on.",
+                ephemeral=True,
+            )
+
     @tree.command(name="logincheck", description="Test if your saved credentials can log in")
     async def cmd_logincheck(interaction: discord.Interaction):
         uid = str(interaction.user.id)
@@ -712,7 +748,7 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
 
     @tree.command(
         name="classdeedee",
-        description="Enable or disable ClassDeeDee check-in and homework checks for your account (default: on)",
+        description="Enable/disable ClassDeeDee check-in and homework together (default: on; see /settings for separate)",
     )
     @app_commands.describe(action="Turn ClassDeeDee on or off for your account")
     async def cmd_classdeedee(interaction: discord.Interaction, action: ClassDeeDeeToggle):
@@ -724,7 +760,12 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
             return
 
         enabled = action == ClassDeeDeeToggle.On
-        registered_users[uid]["classdeedee_enabled"] = enabled
+        # A master switch for both — flips the same two flags /settings
+        # exposes individually (classdeedee_checkin_enabled /
+        # classdeedee_homework_enabled), so a user who only wants one on
+        # should use /settings instead of this command.
+        registered_users[uid]["classdeedee_checkin_enabled"] = enabled
+        registered_users[uid]["classdeedee_homework_enabled"] = enabled
         persist_users()
         log.info("User %s turned ClassDeeDee %s", interaction.user.display_name, "on" if enabled else "off")
 
@@ -892,7 +933,7 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
         # Resolve the ClassDeeDee (ChulaSSO) credential — cu_net main cred, or a
         # `chulasso` added via /deedeeregister. Platform-only users have none.
         try:
-            creds = resolve_cdd_credentials(info)
+            creds = resolve_cdd_credentials(info, "checkin")
         except ValueError:
             await interaction.response.send_message(
                 "❌ Failed to decrypt your password. Please re-register.", ephemeral=True

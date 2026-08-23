@@ -1,9 +1,11 @@
 """Consolidated /settings panel — one Components V2 message covering the
 personal controls that would otherwise need their own slash command to
 check or change: notification preferences (homework digest, deadline
-reminder, ClassDeeDee) and course enrollment (which courses you're checked
-into). Server/channel-scoped commands (/monitor, /leaderboard, etc.) stay
-out of scope — this is about the individual user's own account.
+reminder), automatic check-in + course enrollment, ClassDeeDee (its own
+card — see _build_classdeedee_card for why it doesn't fit under either of
+the other two), and account management. Server/channel-scoped commands
+(/monitor, /leaderboard, etc.) stay out of scope — this is about the
+individual user's own account.
 
 Discord modals only support text inputs — no toggle buttons or dropdowns —
 so this can't be a single modal (see the /settings design discussion).
@@ -31,6 +33,7 @@ from attendance_bot.homework.dm import (
     MIN_DEADLINE_REMINDER_HOURS,
     MAX_DEADLINE_REMINDER_HOURS,
 )
+from attendance_bot.classdeedee.attendance import classdeedee_purpose_enabled
 
 
 # The bot's own brand pink (matches docs/index.html's --pink token) — used as
@@ -83,11 +86,15 @@ def _build_identity_card(user: discord.abc.User, info: dict) -> ui.Container:
 
 
 def _build_notifications_card(uid: str, info: dict) -> ui.Container:
+    """DM preferences only. ClassDeeDee deliberately lives in its own card
+    (see _build_classdeedee_card) — it's not just a notification toggle, it
+    also gates check-in (classdeedee.attendance.check_in_all), so grouping
+    it here alongside two DM-only settings undersold what it actually does.
+    """
     hw_on = info.get("homework_check", False)
     hw_hour = info.get("homework_check_hour", DEFAULT_HOMEWORK_HOUR)
     dr_on = info.get("deadline_reminder_enabled", False)
     dr_hours = info.get("deadline_reminder_hours", DEFAULT_DEADLINE_REMINDER_HOURS)
-    cdd_on = info.get("classdeedee_enabled", True)
 
     # The toggle button's own label ("Turn off X" / "Turn on X") already says
     # whether a setting is on or off — a status line is only worth adding
@@ -100,32 +107,49 @@ def _build_notifications_card(uid: str, info: dict) -> ui.Container:
     if dr_on:
         dr_lines.append(f"**{dr_hours}h** before due")
 
-    cdd_lines = ["## ClassDeeDee", "-# Include your account in ClassDeeDee check-ins and homework checks"]
-
     return ui.Container(
-        ui.TextDisplay("# Notifications\n-# Daily digest, deadline reminder, and ClassDeeDee"),
+        ui.TextDisplay("# Notifications\n-# Daily digest and deadline reminder"),
         ui.Separator(),
         ui.TextDisplay("\n".join(hw_lines)),
         ui.ActionRow(
             _toggle_button(enabled=hw_on, custom_id=_cfg_id("hwtoggle", uid)),
             ui.Button(style=discord.ButtonStyle.secondary, label="Set digest time", custom_id=_cfg_id("hwtime", uid)),
         ),
-        ui.Separator(spacing=discord.SeparatorSpacing.small),
         ui.TextDisplay("\n".join(dr_lines)),
         ui.ActionRow(
             _toggle_button(enabled=dr_on, custom_id=_cfg_id("drtoggle", uid)),
             ui.Button(style=discord.ButtonStyle.secondary, label="Set reminder window", custom_id=_cfg_id("drtime", uid)),
         ),
-        ui.Separator(spacing=discord.SeparatorSpacing.small),
-        ui.TextDisplay("\n".join(cdd_lines)),
+        accent_colour=BRAND_ACCENT,
+    )
+
+
+def _build_classdeedee_card(uid: str, info: dict) -> ui.Container:
+    """Its own card, not folded into Notifications or Attendance — check-in
+    and homework are separate flags now (classdeedee_checkin_enabled /
+    classdeedee_homework_enabled, see classdeedee_purpose_enabled), each
+    gating a different consumer, so this card needs its own two toggles
+    rather than fitting cleanly under either of the other cards.
+    """
+    checkin_on = classdeedee_purpose_enabled(info, "checkin")
+    homework_on = classdeedee_purpose_enabled(info, "homework")
+    return ui.Container(
+        ui.TextDisplay("# ClassDeeDee\n-# Separate switches for check-in and homework"),
+        ui.Separator(),
         ui.ActionRow(
-            _toggle_button(enabled=cdd_on, custom_id=_cfg_id("cddtoggle", uid)),
+            _toggle_button(enabled=checkin_on, label_suffix="Check-in", custom_id=_cfg_id("cddcheckintoggle", uid)),
+            _toggle_button(enabled=homework_on, label_suffix="Homework", custom_id=_cfg_id("cddhwtoggle", uid)),
         ),
         accent_colour=BRAND_ACCENT,
     )
 
 
-def _build_courses_card(uid: str, info: dict) -> ui.Container:
+def _build_attendance_card(uid: str, info: dict) -> ui.Container:
+    """Automatic check-in and course enrollment together — both are about
+    what the bot does when a link/QR is posted, not a DM preference (that's
+    the separate Notifications card), so they share one card.
+    """
+    checkin_on = info.get("checkin_enabled", True)
     subjects = info.get("subjects", [])
     courses_text = ", ".join(f"`{c}`" for c in subjects) if subjects else "None — checked in for **all** courses"
 
@@ -138,9 +162,15 @@ def _build_courses_card(uid: str, info: dict) -> ui.Container:
         )
 
     return ui.Container(
-        ui.TextDisplay("# Courses\n-# Which courses you're checked in for"),
+        ui.TextDisplay(
+            "# Attendance\n-# Whether the bot checks you in automatically, and for which courses"
+        ),
         ui.Separator(),
-        ui.TextDisplay(courses_text),
+        ui.TextDisplay("## Automatic check-in\n-# MyCourseVille + ClassDeeDee, on by default"),
+        ui.ActionRow(
+            _toggle_button(enabled=checkin_on, custom_id=_cfg_id("checkintoggle", uid)),
+        ),
+        ui.TextDisplay(f"## Courses\n{courses_text}"),
         ui.ActionRow(*course_buttons),
         accent_colour=BRAND_ACCENT,
     )
@@ -181,10 +211,10 @@ def _build_account_card(uid: str, info: dict) -> ui.Container:
 
 def build_settings_view(user: discord.abc.User) -> ui.LayoutView:
     """Rebuilt fresh on every render (initial send, and after every click)
-    so it always reflects registered_users' current state. Four Container
-    cards — identity, notifications, courses, account — each carrying the
-    same brand-pink accent bar so the panel reads as one surface, not a
-    stack of unrelated message blocks.
+    so it always reflects registered_users' current state. Five Container
+    cards — identity, notifications, attendance (incl. courses), classdeedee,
+    account — each carrying the same brand-pink accent bar so the panel
+    reads as one surface, not a stack of unrelated message blocks.
     """
     uid = str(user.id)
     info = registered_users.get(uid, {})
@@ -192,7 +222,8 @@ def build_settings_view(user: discord.abc.User) -> ui.LayoutView:
     view = ui.LayoutView(timeout=None)
     view.add_item(_build_identity_card(user, info))
     view.add_item(_build_notifications_card(uid, info))
-    view.add_item(_build_courses_card(uid, info))
+    view.add_item(_build_attendance_card(uid, info))
+    view.add_item(_build_classdeedee_card(uid, info))
     view.add_item(_build_account_card(uid, info))
     return view
 
@@ -411,11 +442,21 @@ async def handle_settings_interaction(interaction: discord.Interaction) -> None:
         registered_users[uid]["deadline_reminder_enabled"] = new_state
         persist_users()
         log.info("User %s %s deadline reminder (via /settings)", uid, "enabled" if new_state else "disabled")
-    elif kind == "cddtoggle":
-        new_state = not registered_users[uid].get("classdeedee_enabled", True)
-        registered_users[uid]["classdeedee_enabled"] = new_state
+    elif kind == "cddcheckintoggle":
+        new_state = not classdeedee_purpose_enabled(registered_users[uid], "checkin")
+        registered_users[uid]["classdeedee_checkin_enabled"] = new_state
         persist_users()
-        log.info("User %s %s ClassDeeDee (via /settings)", uid, "enabled" if new_state else "disabled")
+        log.info("User %s %s ClassDeeDee check-in (via /settings)", uid, "enabled" if new_state else "disabled")
+    elif kind == "cddhwtoggle":
+        new_state = not classdeedee_purpose_enabled(registered_users[uid], "homework")
+        registered_users[uid]["classdeedee_homework_enabled"] = new_state
+        persist_users()
+        log.info("User %s %s ClassDeeDee homework (via /settings)", uid, "enabled" if new_state else "disabled")
+    elif kind == "checkintoggle":
+        new_state = not registered_users[uid].get("checkin_enabled", True)
+        registered_users[uid]["checkin_enabled"] = new_state
+        persist_users()
+        log.info("User %s %s automatic check-in (via /settings)", uid, "enabled" if new_state else "disabled")
     else:
         await interaction.response.defer()
         return

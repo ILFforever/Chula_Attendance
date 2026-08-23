@@ -24,7 +24,7 @@ log.setLevel(logging.DEBUG)
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-BOT_VERSION = "3.2.0"
+BOT_VERSION = "3.3.0"
 
 DATA_DIR = os.environ.get("DATA_DIR", ".")
 CONFIG_FILE = os.path.join(DATA_DIR, "config.json")

@@ -366,6 +366,8 @@ class AttendanceLogger:
         results = []
         matched_any = False
         for uid, info in registered_users.items():
+            if not info.get("checkin_enabled", True):
+                continue  # opted out with /autocheckin off — Homework Check is unaffected
             subjects = info.get("subjects") or []
             if subjects and course_id and course_id not in subjects:
                 continue

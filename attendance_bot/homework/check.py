@@ -31,7 +31,7 @@ from attendance_bot.mcv.attendance import (
     LoginError as McvLoginError,
 )
 from attendance_bot.mcv.homework import fetch_upcoming_items, items_for_subjects
-from attendance_bot.classdeedee.attendance import resolve_cdd_credentials
+from attendance_bot.classdeedee.attendance import resolve_cdd_credentials, classdeedee_purpose_enabled
 from attendance_bot.classdeedee.homework import check_homework_for_user as cdd_check_homework
 from attendance_bot.classdeedee.login import (
     WrongCredentialsError as CddWrongCredentialsError,
@@ -128,7 +128,7 @@ def check_homework_for_user(uid: str) -> dict:
     if not info:
         raise ValueError(f"No registered user with uid {uid!r}")
     subjects = info.get("subjects", [])
-    cdd_disabled = not info.get("classdeedee_enabled", True)
+    cdd_disabled = not classdeedee_purpose_enabled(info, "homework")
 
     raw_items: list[dict] = []
     mcv_error = None
@@ -171,7 +171,7 @@ def check_homework_for_user(uid: str) -> dict:
 
     # ---------------- ClassDeeDee ----------------
     try:
-        creds = resolve_cdd_credentials(info)
+        creds = resolve_cdd_credentials(info, "homework")
     except ValueError:
         creds = None
         cdd_error = "failed to decrypt ClassDeeDee credentials"

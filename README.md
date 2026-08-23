@@ -6,10 +6,12 @@ A Discord bot for Chula students: it automatically checks you into **MyCourseVil
 
 ## Features
 
-- **Attendance check-in** — auto check-in the moment a link/QR is posted, for MyCourseVille and ClassDeeDee
+- **Attendance check-in** — auto check-in the moment a link/QR is posted, for MyCourseVille and ClassDeeDee (opt out with `/autocheckin off` if you only want Homework Check)
 - **Homework Check** *(new in v3)* — a daily DM listing outstanding work across both platforms, sorted by urgency, with buttons to open or mark items done
+- **Deadline reminder** *(new in v3.3)* — a separate, off-by-default DM shortly before something you haven't marked finished is actually due
 - **Leaderboard** — tracks who posts attendance links most often
 - **Course enrollment** — optionally scope either feature to just your own courses
+- **`/settings` panel** *(new in v3.2)* — one place for every personal toggle above, instead of memorizing commands
 
 ---
 
@@ -20,6 +22,8 @@ A Discord bot for Chula students: it automatically checks you into **MyCourseVil
 3. When an attendance link is posted in that channel, the bot logs in and checks in everyone automatically
 
 For **ClassDeeDee**, scan the instructor's attendance QR with the phone scanner from `/scanner` — the bot logs everyone in and checks them in. See [ClassDeeDee (ChulaSSO)](#classdeedee-chulasso) below.
+
+Only want the Homework Check digest, not to be checked in automatically? `/autocheckin off` stops the bot from submitting your attendance on either platform — Homework Check keeps working either way, since it only reads your outstanding work and never submits anything.
 
 ### Course Enrollment
 
@@ -51,7 +55,9 @@ ClassDeeDee authenticates through **ChulaSSO** (`account.it.chula.ac.th`), not M
 - **CU Net users** — nothing. A CU Net login *is* a ChulaSSO login, so it works on ClassDeeDee automatically.
 - **MyCourseVille users** — a platform account can't log into ChulaSSO. Add your ChulaSSO login once with `/deedeeregister <student_id> <password>`; it's verified on the spot and stored alongside your MCV credential. Users who don't add one are simply skipped on ClassDeeDee scans and homework checks.
 
-Use `/deedeecheck` any time to confirm your ClassDeeDee login works (it echoes back your name and student ID). If you're a CU Net user who'd rather not use ClassDeeDee at all, `/classdeedee off` excludes your account from it entirely — both check-in and homework checks — without touching MyCourseVille.
+Use `/deedeecheck` any time to confirm your ClassDeeDee login works (it echoes back your name and student ID). If you're a CU Net user who'd rather not use ClassDeeDee at all, `/classdeedee off` excludes your account from it entirely — both check-in and homework checks — without touching MyCourseVille. Want only one of the two? `/settings` exposes ClassDeeDee check-in and ClassDeeDee homework as separate switches; `/classdeedee` always flips both together.
+
+A MyCourseVille-account user who wants to drop just the ClassDeeDee login (keeping MyCourseVille) can use `/deedeeunregister` instead of `/unregister` — it clears the `chulasso` credential added via `/deedeeregister` without touching anything else. CU Net users have nothing separate to unlink this way, since their ClassDeeDee login *is* their main login.
 
 **Timing note:** because the nonce lives only ~8 seconds, all logins for a scan run concurrently across a bounded thread pool (`CDD_CHECKIN_CONCURRENCY`, default 16) so the whole class lands inside the window while keeping RAM modest.
 
@@ -96,6 +102,28 @@ These buttons keep working even after the bot restarts, or days after the messag
 
 Both respect your `/enroll` list the same way attendance check-in does — enrolled in nothing means everything is checked; enrolled in specific courses means only those are.
 
+### Deadline reminder
+
+Separate from the daily digest above, and off by default: a heads-up DM shortly before something you haven't marked finished is actually due, instead of waiting for your next daily digest.
+
+1. Turn it on with `/deadlinereminder on` (default window: 12 hours before due)
+2. Change the window with `/deadlinereminderhours <hours>` (1–72)
+
+It's driven by a cache of each item's resolved due time, refreshed on your last daily/manual homework check — not a fresh platform login on every check, since MyCourseVille/ClassDeeDee's "still outstanding" list doesn't reflect submission status any more reliably than that cache would. **Mark as finished** still suppresses it the same way it suppresses the daily digest.
+
+> **Note:** MyCourseVille's own API only reports items due within the next 7 days — anything further out won't appear (in either the daily digest or the deadline reminder) until it's inside that window.
+
+---
+
+## `/settings`
+
+One consolidated panel instead of memorizing commands — covers everything above that's a personal toggle:
+
+- **Notifications** — homework digest (on/off + hour) and deadline reminder (on/off + window)
+- **Attendance** — automatic check-in on/off, plus course enrollment (add/remove)
+- **ClassDeeDee** — check-in and homework as two separate switches
+- **Account** — unlink your ClassDeeDee login, or delete your account entirely — each gated behind a type-to-confirm step so a stray click can't delete anything
+
 ---
 
 ## Commands
@@ -105,11 +133,13 @@ Both respect your `/enroll` list the same way attendance check-in does — enrol
 | Command | Description |
 |---------|-------------|
 | `/register <login_method> <username> <password>` | Save your credentials (ephemeral) |
-| `/unregister` | Remove your credentials |
+| `/unregister` | Remove everything — MyCourseVille, ClassDeeDee, and all your settings |
 | `/users` | List registered users |
 | `/deedeeregister <username> <password>` | **MyCourseVille users only:** add a ClassDeeDee (ChulaSSO) login |
+| `/deedeeunregister` | Remove just that ClassDeeDee login, keep your MyCourseVille account |
 | `/deedeecheck` | Test if your saved credentials can log into ClassDeeDee (ChulaSSO) |
-| `/classdeedee <on\|off>` | Include/exclude your account from ClassDeeDee entirely (default: on) |
+| `/classdeedee <on\|off>` | Include/exclude your account from ClassDeeDee entirely (default: on) — see `/settings` for check-in/homework separately |
+| `/settings` | One panel for notifications, attendance, ClassDeeDee, and account management |
 | `/release` | Show what's new in the latest version |
 | `/help` | Show all commands |
 | `/status` | Bot uptime and info |
@@ -118,6 +148,7 @@ Both respect your `/enroll` list the same way attendance check-in does — enrol
 
 | Command | Description |
 |---------|-------------|
+| `/autocheckin <on\|off>` | Opt out of automatic check-in (default: on) — Homework Check keeps working |
 | `/enroll <course_code>` | Enroll in a course so you're only checked in for its links |
 | `/unenroll <course_code>` | Remove a course from your enrollment list |
 | `/unenrollall` | Remove every course from your enrollment list |
@@ -137,6 +168,8 @@ Both respect your `/enroll` list the same way attendance check-in does — enrol
 | `/homework <on\|off>` | Turn the daily homework reminder DM on or off |
 | `/homeworktime <hour>` | Set what hour it arrives, 0-23 Bangkok time (default 8am) |
 | `/homeworkcheck` | Run it once right now, whether or not the daily DM is on |
+| `/deadlinereminder <on\|off>` | DM shortly before something's due (default: off) |
+| `/deadlinereminderhours <hours>` | How many hours before due, 1-72 (default 12) |
 
 ---
 
@@ -189,6 +222,8 @@ The bot uses lightweight HTTP requests (`requests` + `BeautifulSoup`) instead of
 - The shared phone QR scanner ([attendance_bot/scanner/webserver.py](attendance_bot/scanner/webserver.py) + [web/scan.html](web/scan.html)) decodes on-device and routes MCV links and ClassDeeDee QRs to the right handler.
 
 **Homework Check** ([attendance_bot/homework/](attendance_bot/homework/)):
-- [check.py](attendance_bot/homework/check.py) — logs into both platforms, merges MyCourseVille's "due soon" panel with ClassDeeDee's per-course assignment lists, groups by course and sorts by urgency.
-- [dm.py](attendance_bot/homework/dm.py) — builds and sends the DM using Discord's **Components V2** layout system (not classic embeds), which is what lets each item's buttons sit directly next to it rather than bottom-attached to the whole message. Also owns the button click handling and the per-user hourly scheduler.
-- A `homework.json` store (separate from `users.json`/`leaderboard.json`) tracks which items a user has clicked "Mark as finished" on, and which day each user's reminder last ran (so a 15-minute scheduler tick doesn't double-send).
+- [check.py](attendance_bot/homework/check.py) — logs into both platforms, merges MyCourseVille's "due soon" panel with ClassDeeDee's per-course assignment lists, groups by course and sorts by urgency. Also resolves each item's absolute due time and caches it for the deadline reminder.
+- [dm.py](attendance_bot/homework/dm.py) — builds and sends the daily digest DM using Discord's **Components V2** layout system (not classic embeds), which is what lets each item's buttons sit directly next to it rather than bottom-attached to the whole message. Also owns the button click handling, the per-user hourly scheduler, and the separate deadline-reminder tick — the latter is a pure cache scan against data `check.py` already fetched, so it runs every 15 minutes with no extra platform login.
+- A `homework.json` store (separate from `users.json`/`leaderboard.json`) tracks which items a user has clicked "Mark as finished" on, which day each user's daily reminder last ran (so a 15-minute scheduler tick doesn't double-send), and the deadline cache described above.
+
+**`/settings` panel** ([attendance_bot/settings_panel.py](attendance_bot/settings_panel.py)): a single Components V2 message with per-user toggles built as separate Container "cards" — identity, notifications, attendance (incl. courses), ClassDeeDee, account. Destructive actions (unlink ClassDeeDee, delete account) route through a type-to-confirm modal rather than acting on the first click.

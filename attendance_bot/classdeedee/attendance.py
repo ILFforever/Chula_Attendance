@@ -49,10 +49,20 @@ CHECKIN_CONCURRENCY = max(1, int(os.environ.get("CDD_CHECKIN_CONCURRENCY", "16")
 NONCE_WINDOW_SECONDS = 8
 
 
-def resolve_cdd_credentials(info: dict) -> tuple[str, str] | None:
+def classdeedee_purpose_enabled(info: dict, purpose: str) -> bool:
+    """Whether this user wants their ClassDeeDee login used for `purpose`
+    ("checkin" or "homework") — separate flags so a user can, say, keep
+    ClassDeeDee check-in on while skipping it in the homework digest, or
+    vice versa. Falls back to the older single `classdeedee_enabled` flag
+    for accounts that toggled it before the two were split, then to True.
+    """
+    return info.get(f"classdeedee_{purpose}_enabled", info.get("classdeedee_enabled", True))
+
+
+def resolve_cdd_credentials(info: dict, purpose: str) -> tuple[str, str] | None:
     """Return (username, password) to use for ClassDeeDee, or None if the user
-    has no usable ClassDeeDee login, or has turned ClassDeeDee off (/classdeedee
-    off — for CU Net users who don't want their account used there at all).
+    has no usable ClassDeeDee login, or has turned it off for this `purpose`
+    ("checkin" or "homework" — see classdeedee_purpose_enabled).
 
     Priority:
       1. an explicit `chulasso` sub-credential (added via /deedeeregister), else
@@ -61,10 +71,10 @@ def resolve_cdd_credentials(info: dict) -> tuple[str, str] | None:
     authenticate against ChulaSSO). May raise ValueError if decryption fails.
 
     This is the single choke point both check-in (check_in_all) and the
-    homework check (homework/check.py) go through, so the /classdeedee
-    toggle only needs to be respected here.
+    homework check (homework/check.py) go through, so the /classdeedee /
+    /settings toggles only need to be respected here.
     """
-    if not info.get("classdeedee_enabled", True):
+    if not classdeedee_purpose_enabled(info, purpose):
         return None
     cs = info.get("chulasso")
     if cs and cs.get("username") and cs.get("password"):
@@ -192,7 +202,7 @@ def bench_logins() -> dict:
     for uid, info in registered_users.items():
         name = info.get("display_name", info.get("username", uid))
         try:
-            creds = resolve_cdd_credentials(info)
+            creds = resolve_cdd_credentials(info, "checkin")
         except ValueError:
             per.append({"name": name, "ok": False, "seconds": 0.0, "error": "decrypt failed"})
             continue
@@ -279,9 +289,11 @@ def check_in_all(sid: str, nonce: str) -> list[tuple[str, str]]:
     # is pure I/O. Users with no ClassDeeDee login (MCV-only, no /deedeeregister)
     # are skipped silently so scan results stay clean.
     for uid, info in registered_users.items():
+        if not info.get("checkin_enabled", True):
+            continue  # opted out with /autocheckin off — Homework Check is unaffected
         display_name = info.get("display_name", info.get("username", uid))
         try:
-            creds = resolve_cdd_credentials(info)
+            creds = resolve_cdd_credentials(info, "checkin")
         except ValueError:
             log.error("Failed to decrypt ClassDeeDee credentials for %s", display_name)
             results.append((uid, f"❌ **{display_name}** — failed to decrypt password (re-register)"))
