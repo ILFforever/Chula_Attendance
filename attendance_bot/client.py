@@ -72,10 +72,13 @@ homework_executor = ThreadPoolExecutor(max_workers=HOMEWORK_CONCURRENCY, thread_
 _HOURLY_BANGKOK_TIMES = [dt_time(hour=h, minute=0, tzinfo=TZ_BANGKOK) for h in range(24)]
 
 # Same reasoning, same fix, applied to the deadline-reminder scan too — pinned
-# to fixed quarter-hour checkpoints (Bangkok time) instead of a relative
-# cadence, so its timing is predictable and independent of restarts as well.
-_QUARTER_HOURLY_BANGKOK_TIMES = [
-    dt_time(hour=h, minute=m, tzinfo=TZ_BANGKOK) for h in range(24) for m in (0, 15, 30, 45)
+# to fixed half-hour checkpoints (Bangkok time) instead of a relative cadence,
+# so its timing is predictable and independent of restarts as well. The tick is
+# a pure "is anything inside the user's window yet" scan with a per-item
+# reminded flag, so the cadence only sets worst-case latency: a reminder lands
+# at most 30 minutes after its window opens.
+_HALF_HOURLY_BANGKOK_TIMES = [
+    dt_time(hour=h, minute=m, tzinfo=TZ_BANGKOK) for h in range(24) for m in (0, 30)
 ]
 
 
@@ -89,7 +92,7 @@ async def _before_homework_scheduler_loop():
     await bot.wait_until_ready()
 
 
-@tasks.loop(time=_QUARTER_HOURLY_BANGKOK_TIMES)
+@tasks.loop(time=_HALF_HOURLY_BANGKOK_TIMES)
 async def deadline_reminder_loop():
     await run_deadline_reminder_tick(bot)
 

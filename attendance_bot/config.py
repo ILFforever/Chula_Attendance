@@ -18,6 +18,25 @@ logging.basicConfig(
 )
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("discord").setLevel(logging.WARNING)
+
+
+class _ClockDriftFilter(logging.Filter):
+    """Drop discord.ext.tasks' "Clock drift detected" warnings.
+
+    Our schedulers use tasks.loop(time=...), and asyncio routinely wakes a few
+    milliseconds *before* the target time. discord.py notices the recomputed
+    next iteration hasn't advanced, warns, sleeps the remaining few ms, and
+    then runs the tick exactly once at the right time — nothing is skipped or
+    duplicated. With 24 hourly + 48 half-hourly checkpoints that is ~72 useless
+    warnings a day, so filter just that message and leave the rest of the
+    logger's output alone.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not str(record.msg).startswith("Clock drift detected")
+
+
+logging.getLogger("discord.ext.tasks").addFilter(_ClockDriftFilter())
 log = logging.getLogger("attendance-bot")
 log.setLevel(logging.DEBUG)
 
