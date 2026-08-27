@@ -223,18 +223,26 @@ def build_course_view(uid: str, group: dict, header_lines: list[str] | None = No
 
 
 async def send_homework_dm_for_user(bot: discord.Client, uid: str, result: dict) -> None:
-    """Send one DM per outstanding course to `uid`, most urgent first.
+    """Send one DM per outstanding course to `uid`, most urgent first, or a
+    single "all clear" DM when there's nothing to report.
 
-    Silently sends nothing if there's nothing outstanding and no platform
-    errors — a clean daily "you're all caught up" DM would just be noise.
+    This used to return silently on a clean check, on the theory that an
+    all-clear DM is noise. From the user's side it reads as a broken bot
+    instead: the check runs, the logs say it succeeded, and nothing arrives —
+    indistinguishable from a crashed loop, an expired login, or DMs being
+    closed. `/homeworkcheck` made it worse by replying "check your DMs in a
+    moment" and then never sending anything. One short DM a day is a cheap
+    price for "the bot is alive and you're actually clear", and the controls
+    row on it means anyone who disagrees can turn the digest off in one click.
     """
     groups = filter_suppressed(uid, result["groups"])
 
     today_str = datetime.now(TZ_BANGKOK).strftime("%A, %B %d, %Y")
     item_count = sum(len(g["items"]) for g in groups)
     header_lines = [
-        "# 📚 Homework Check",
-        f"-# {today_str} · {len(groups)} course(s), {item_count} item(s) outstanding",
+        "# 📚 Homework Check" if groups else "# ✅ All Caught Up",
+        f"-# {today_str} · "
+        + (f"{len(groups)} course(s), {item_count} item(s) outstanding" if groups else "nothing outstanding"),
     ]
     if result["mcv_error"]:
         header_lines.append(f"⚠️ MyCourseVille check failed — {result['mcv_error']}")
@@ -244,10 +252,6 @@ async def send_homework_dm_for_user(bot: discord.Client, uid: str, result: dict)
         header_lines.append("ℹ️ ClassDeeDee wasn't checked — no login on file, use `/deedeeregister` to add one")
     has_errors = bool(result["mcv_error"] or result["cdd_error"])
 
-    if not groups and not has_errors:
-        log.debug("Homework check for %s: nothing outstanding, no DM sent", uid)
-        return
-
     try:
         user = bot.get_user(int(uid)) or await bot.fetch_user(int(uid))
     except (discord.NotFound, discord.HTTPException) as exc:
@@ -255,15 +259,27 @@ async def send_homework_dm_for_user(bot: discord.Client, uid: str, result: dict)
         return
 
     if not groups:
+        # Be specific about *what* was clean — "nothing outstanding" means
+        # something different when a platform errored out or was never checked,
+        # and a vague all-clear in those cases is actively misleading.
+        if has_errors:
+            body = "Nothing outstanding on the platforms that answered — see the warning(s) above."
+        elif result["cdd_skipped"]:
+            body = "No outstanding homework on MyCourseVille. 🎉"
+        else:
+            body = "No outstanding homework on MyCourseVille or ClassDeeDee. 🎉"
+
         no_work_view = ui.LayoutView(timeout=None)
         for line in header_lines:
             no_work_view.add_item(ui.TextDisplay(line))
-        no_work_view.add_item(ui.TextDisplay("Nothing outstanding to report right now."))
+        no_work_view.add_item(ui.TextDisplay(body))
         _append_controls(no_work_view, uid)
         try:
             await user.send(view=no_work_view)
         except discord.HTTPException as exc:
             log.warning("Homework check: could not DM %s: %s", uid, exc)
+            return
+        log.info("Homework check: all-clear DM sent to %s", uid)
         return
 
     for i, group in enumerate(groups):
@@ -551,7 +567,7 @@ async def run_homework_scheduler_tick(bot: discord.Client, executor) -> None:
 # digest hour. It reads only the deadline cache populated by
 # check.cache_deadlines (last refreshed on that user's most recent
 # daily/manual homework check) — it never logs into MCV/ClassDeeDee itself,
-# so running it on every 15-min scheduler tick costs nothing beyond a dict
+# so running it on every 30-min scheduler tick costs nothing beyond a dict
 # scan regardless of how many users have it on.
 #
 # A live re-check wouldn't buy anything here anyway: MCV/ClassDeeDee's "still
