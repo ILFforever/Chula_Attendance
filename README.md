@@ -134,7 +134,6 @@ One consolidated panel instead of memorizing commands — covers everything abov
 |---------|-------------|
 | `/register <login_method> <username> <password>` | Save your credentials (ephemeral) |
 | `/unregister` | Remove everything — MyCourseVille, ClassDeeDee, and all your settings |
-| `/users` | List registered users |
 | `/deedeeregister <username> <password>` | **MyCourseVille users only:** add a ClassDeeDee (ChulaSSO) login |
 | `/deedeeunregister` | Remove just that ClassDeeDee login, keep your MyCourseVille account |
 | `/deedeecheck` | Test if your saved credentials can log into ClassDeeDee (ChulaSSO) |

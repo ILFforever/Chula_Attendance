@@ -185,25 +185,6 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
             "✅ Your credentials have been removed.", ephemeral=True
         )
 
-    @tree.command(name="users", description="List all registered users")
-    @app_commands.allowed_installs(guilds=True, users=True)
-    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
-    async def cmd_users(interaction: discord.Interaction):
-        if not registered_users:
-            await interaction.response.send_message(
-                "No users registered yet.", ephemeral=True
-            )
-            return
-
-        lines = []
-        for uid, info in registered_users.items():
-            lines.append(f"• **{info['display_name']}** (`{info['username']}`)")
-
-        await interaction.response.send_message(
-            f"**Registered users ({len(lines)}):**\n" + "\n".join(lines),
-            ephemeral=True,
-        )
-
     # -------------------------------------------------------------------
     # Subject / Course Enrollment
     # -------------------------------------------------------------------
