@@ -7,7 +7,7 @@ full changelog prose.
 """
 
 WELCOME_MESSAGE = (
-    "**Welcome to Chula Attendance v3.3!**\n"
+    "**Welcome to Chula Attendance v3.4!**\n"
     "You're registered — the bot will now auto check you into MyCourseVille and ClassDeeDee "
     "attendance links/QRs the moment they're posted in a watched channel, no scrambling before they expire.\n"
     "By default that's every course. Use `/enroll <course_code>` to limit it to just yours.\n"
@@ -34,12 +34,30 @@ WHATS_NEW_MESSAGE_3_3 = (
 WHATS_NEW_MESSAGE_3_4 = (
     "**What's new in v3.4 — Add your own assignments**\n"
     "Homework Check isn't limited to what MyCourseVille and ClassDeeDee report any more. "
-    "`/homeworkadd <course> <desc> <date> [time]` adds anything with a deadline — a reading, a group "
-    "meeting, a paper the platforms never list.\n"
-    "Dates read the way you'd type them: `fri`, `tomorrow`, `12/09`, `2026-09-12`, with `5pm`/`17:30` "
-    "optional (blank = end of day). They appear in your digest and deadline reminders next to everything "
-    "else, grouped under the same course.\n"
-    "`/homeworklist` to review or delete them — they also clear themselves 5 days after they're due."
+    "`/homeworkadd` takes anything with a deadline — a reading, a group meeting, a paper the platforms "
+    "never list.\n"
+    "Dates read the way you'd type them: `fri`, `tomorrow`, `12/09`, with `5pm`/`17:30` optional "
+    "(blank = end of day). They join your digest and deadline reminders, grouped under the same course.\n"
+    "`/homeworklist` to review or delete them."
 )
 
-RELEASE_MESSAGES = [WELCOME_MESSAGE, WHATS_NEW_MESSAGE, WHATS_NEW_MESSAGE_3_3, WHATS_NEW_MESSAGE_3_4]
+# v3.4 shipped two unrelated halves; they're separate messages because one
+# ~1000-char wall is exactly what the file's "read at a glance" rule exists
+# to prevent.
+WHATS_NEW_MESSAGE_3_4_SCANNER = (
+    "**Also in v3.4 — Scanner & settings**\n"
+    "`/scanner` links are personal now: a scan is credited to **you**, so QR check-ins count on "
+    "`/leaderboard` and the channel post says who scanned it. Older shared links still work but stay "
+    "anonymous — run `/scanner` again to get your own.\n"
+    "Scanning is faster and reaches further: the camera runs at 1080p and decodes just the reticle, so a "
+    "code across the room resolves. Lens switching and zoom too, where your phone supports it.\n"
+    "`/settings` is tabbed — Notifications · Assignments · Attendance · ClassDeeDee · Account."
+)
+
+RELEASE_MESSAGES = [
+    WELCOME_MESSAGE,
+    WHATS_NEW_MESSAGE,
+    WHATS_NEW_MESSAGE_3_3,
+    WHATS_NEW_MESSAGE_3_4,
+    WHATS_NEW_MESSAGE_3_4_SCANNER,
+]
