@@ -48,8 +48,8 @@ done. What is left:
       costs ~17ms (desktop; 3-5x that on a phone), but jsQR degrades badly on
       grainy low-light frames — uniform noise measures ~460ms — and that runs on
       the main thread. The alternating cheap full-frame pass hides most of it.
-- [ ] Remember the chosen lens and zoom in `localStorage`; right now every
-      reopen starts back at the default camera at 1x.
+- [ ] Remember the chosen stop in `localStorage`; right now every reopen
+      starts back at the default camera at 1x.
 
 ## Page weight and install
 
