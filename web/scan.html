@@ -223,6 +223,7 @@
   var stops    = [];         // the focal-length buttons: lenses, or zoom levels
   var stopIdx  = 0;
   var switching = false;     // guards against a second tap mid-switch
+  var blocked  = {};         // deviceIds that turned out to be unusable
   var nativeZoom = false;    // does the track expose a real zoom capability?
   var zoom     = 1;
   var zoomMin  = 1;
@@ -340,25 +341,49 @@
     await video.play();
   }
 
-  function lensLabel(label, i) {
+  // Work out what a camera actually is from its label, or give up and say so.
+  //
+  // iOS names cameras predictably ("Back Ultra Wide Camera") but *also* exposes
+  // virtual combo devices — "Back Dual Wide Camera", "Back Triple Camera" —
+  // that bundle two or three physical lenses and switch between them
+  // internally. Those duplicate the physical entries: an iPhone 16 with two
+  // lenses enumerates three back devices, which is why it showed three stops
+  // with two of them looking identical. Skip the combos and keep the physicals.
+  //
+  // Returning null means "do not offer this": a front camera, a combo, or a
+  // label we cannot read. Guessing is what put the selfie camera behind a "1x"
+  // button on an iPhone 17 Pro Max.
+  function lensRole(label) {
     var l = (label || '').toLowerCase();
-    if (l.indexOf('ultra') > -1) return '.5x';
-    if (l.indexOf('telephoto') > -1 || l.indexOf('tele') > -1) return '3x';
-    if (l.indexOf('wide') > -1 || l.indexOf('dual') > -1 || l.indexOf('triple') > -1) return '1x';
-    return String(i + 1) + 'x';
+    if (!l) return null;
+    if (/front|user facing|truedepth|selfie|desk view/.test(l)) return null;
+    if (/dual|triple|virtual/.test(l)) return null;
+    if (/ultra/.test(l)) return { key: 'ultra', order: 0, label: '.5x' };
+    // No API reports focal length, and a telephoto is 2x on one iPhone and 5x
+    // on another — so name it rather than invent a number that will be wrong.
+    if (/telephoto|periscope|tele /.test(l)) return { key: 'tele', order: 2, label: 'Tele' };
+    if (/back|rear|environment|wide|camera/.test(l)) return { key: 'wide', order: 1, label: '1x' };
+    return null;
   }
 
   async function refreshLenses() {
     lenses = [];
     try {
-      // Device labels are blank until camera permission is granted, so this
-      // has to happen after openCamera rather than before it.
+      // Labels are blank until camera permission is granted, so this has to run
+      // after openCamera. If they are blank anyway, every role comes back null
+      // and we fall through to zoom stops — which is the right outcome: an
+      // unlabelled list is not something to guess at.
       var devs = await navigator.mediaDevices.enumerateDevices();
-      var cams = devs.filter(function (d) { return d.kind === 'videoinput'; });
-      var back = cams.filter(function (d) { return /back|rear|environment/i.test(d.label); });
-      // A front camera is never useful here. Fall back to the full list only
-      // when the labels gave us nothing to filter on.
-      lenses = (back.length ? back : cams).slice(0, 4);
+      var seen = {};
+      devs.forEach(function (d) {
+        if (d.kind !== 'videoinput') return;
+        if (blocked[d.deviceId]) return;       // proven bad on this device
+        var role = lensRole(d.label);
+        if (!role || seen[role.key]) return;   // one button per physical lens
+        seen[role.key] = true;
+        lenses.push({ deviceId: d.deviceId, label: d.label, role: role });
+      });
+      lenses.sort(function (a, b) { return a.role.order - b.role.order; });
     } catch (e) { lenses = []; }
   }
 
@@ -385,28 +410,21 @@
   function stopLabel(f) {
     // .5x rather than 0.5x — it is what phone camera apps show, and it keeps
     // every pill the same width.
-    return (f < 1 ? String(f).replace('0.', '.') : String(f)) + 'x';
+    var r = Math.round(f * 10) / 10;
+    return (r < 1 ? String(r).replace('0.', '.') : String(r)) + 'x';
   }
 
-  // One row of focal-length buttons, the way a phone's own camera app works.
-  // Separate lenses are always preferable to zooming: each is its own sensor,
-  // so switching to the telephoto costs no detail while cropping into the wide
-  // one costs all of it. Only when there is a single camera do the buttons fall
-  // back to zoom levels on that camera.
   function buildStops() {
     stops = [];
     if (lenses.length > 1) {
-      lenses.forEach(function (d, i) {
-        stops.push({
-          label: lensLabel(d.label, i),
-          deviceId: d.deviceId,
-          zoom: null,
-          title: d.label || ('Camera ' + (i + 1)),
-        });
+      lenses.forEach(function (d) {
+        stops.push({ label: d.role.label, deviceId: d.deviceId, zoom: null, title: d.label });
       });
-    } else if (nativeZoom) {
+      return;
+    }
+    if (nativeZoom) {
       // Absolute focal lengths the sensor can actually reach. On a logical
-      // multi-camera these are exactly the thresholds where Android swaps the
+      // multi-camera these are exactly the thresholds where the OS swaps the
       // physical lens, so .5x lands on the ultra-wide and 5x on the periscope
       // even though neither is enumerated as its own device.
       var lo = zoomMin / zoomUnit, hi = zoomMax / zoomUnit;
@@ -416,22 +434,22 @@
                        title: 'Zoom ' + stopLabel(f) });
         }
       });
-      // A narrow range (say 1.0-1.8) matches nothing on the ladder; fall back
-      // to the ends so the control is never a single dead button.
+      // A narrow range (say 1.0-1.8) matches nothing on the ladder. Space a few
+      // stops across whatever range there is rather than showing one dead pill.
       if (stops.length < 2) {
-        stops = [
-          { label: stopLabel(Math.round(lo * 10) / 10), deviceId: null, zoom: zoomMin, title: 'Widest' },
-          { label: stopLabel(Math.round(hi * 10) / 10), deviceId: null, zoom: zoomMax, title: 'Closest' },
-        ];
+        stops = [lo, (lo + hi) / 2, hi].map(function (f) {
+          return { label: stopLabel(f), deviceId: null, zoom: f * zoomUnit,
+                   title: 'Zoom ' + stopLabel(f) };
+        });
       }
-    } else {
-      // Nothing but pixels to work with. Still worth offering: it does not add
-      // detail, but it lets someone frame a distant code inside the reticle,
-      // and the decode window narrows to match.
-      [1, 2, 3].forEach(function (f) {
-        stops.push({ label: f + 'x', deviceId: null, zoom: f, title: 'Digital zoom ' + f + 'x' });
-      });
+      return;
     }
+    // Nothing but pixels to work with. Still worth offering: it does not add
+    // detail, but it lets someone frame a distant code inside the reticle,
+    // and the decode window narrows to match.
+    [1, 2, 3].forEach(function (f) {
+      stops.push({ label: f + 'x', deviceId: null, zoom: f, title: 'Digital zoom ' + f + 'x' });
+    });
   }
 
   // Derive the active stop from what is really open, never from a stored index.
@@ -509,7 +527,7 @@
 
     if (!s.deviceId) {
       // A zoom level on the camera already open.
-      if (Math.abs(s.zoom - zoom) < 0.01) return;
+      if (Math.abs(s.zoom - zoom) < 0.01 * zoomUnit) return;
       zoom = s.zoom;
       stopIdx = i;
       renderStops();
@@ -525,12 +543,24 @@
     stopIdx = i;
     renderStops();
     stopStream();
+
+    var failed = null;
     try {
       await openCamera(s.deviceId);
+      // Labels lie. If what opened is the selfie camera, drop it rather than
+      // leaving someone pointing the wrong way round with no clue why.
+      var facing = (track && track.getSettings) ? track.getSettings().facingMode : null;
+      if (facing === 'user') failed = 'front';
     } catch (e) {
-      // Some cameras enumerate but refuse to open. Crawl back to the one that
-      // was working rather than leaving a dead viewport.
-      say('That lens would not open — staying on the previous one.', 'error');
+      failed = 'open';
+    }
+
+    if (failed) {
+      // Remember it, or the rebuild below just offers the same bad camera again.
+      blocked[s.deviceId] = true;
+      say(failed === 'front'
+        ? 'That camera faces the wrong way — removed it.'
+        : 'That lens would not open — staying on the previous one.', 'error');
       try {
         await openCamera(prev);
       } catch (e2) {
@@ -541,6 +571,7 @@
         return;
       }
     }
+
     await syncControls();
     switching = false;
     if (!halted) loop();
