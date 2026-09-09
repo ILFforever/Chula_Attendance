@@ -108,10 +108,15 @@
   #controls {
     display: flex; justify-content: center;
     margin-top: 12px; min-height: 34px;
+    /* A wide zoom range can produce six stops; let the row scroll on a narrow
+       phone rather than clipping the outer ones. */
+    overflow-x: auto; -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
   }
+  #controls::-webkit-scrollbar { display: none; }
   #controls[hidden] { display: none; }
   #stops {
-    display: flex; gap: 4px;
+    display: flex; gap: 4px; flex: 0 0 auto;
     padding: 4px; border-radius: 999px;
     background: var(--panel); border: 1px solid var(--line);
   }
@@ -220,8 +225,9 @@
   var switching = false;     // guards against a second tap mid-switch
   var nativeZoom = false;    // does the track expose a real zoom capability?
   var zoom     = 1;
-  var zoomMin  = 1;          // 1 on most devices, 100 where zoom is a percentage
+  var zoomMin  = 1;
   var zoomMax  = 1;
+  var zoomUnit = 1;          // 1 normally, 100 where zoom is a percentage
   var pass     = 0;
   var runId    = 0;          // bumped on every teardown; stale ticks bail out
 
@@ -231,7 +237,8 @@
   // reopened without the link. Then scrub the token out of the address bar.
   // Captured before the hash is scrubbed below: /scan#debug shows what the
   // phone reported about its cameras.
-  var DEBUG = location.hash.indexOf('debug') > -1;
+  var DEBUG = location.hash.indexOf('debug') > -1 ||
+              localStorage.getItem('scan_debug') === '1';
 
   var secret = localStorage.getItem('scan_token') || '';
   var m = /[#&]t=([^&]+)/.exec(location.hash);
@@ -359,11 +366,26 @@
     var caps = (track && track.getCapabilities) ? (track.getCapabilities() || {}) : {};
     var z = caps.zoom;
     nativeZoom = !!(z && z.max > z.min);
-    // Not every device counts zoom from 1 — some Androids report a percentage
-    // (min 100, max 400) — so anchor everything to whatever the minimum is.
-    zoomMin = (nativeZoom && z.min > 0) ? z.min : 1;
-    zoomMax = nativeZoom ? z.max : 1;
-    zoom = nativeZoom ? (((track.getSettings && track.getSettings().zoom) || z.min)) : 1;
+    if (nativeZoom) {
+      // The zoom value is an absolute focal-length multiplier where 1.0 is the
+      // main wide lens — NOT a multiple of the minimum. On a phone that folds
+      // its ultra-wide into one logical camera the minimum is below 1 (0.5 or
+      // 0.6), so anchoring to it mislabels every stop and never reaches true
+      // 1x. A few devices report a percentage instead (100 = 1x); a minimum of
+      // 50 or more is the tell, since no real camera zooms out 50x.
+      zoomUnit = z.min >= 50 ? 100 : 1;
+      zoomMin = z.min;
+      zoomMax = z.max;
+      zoom = (track.getSettings && track.getSettings().zoom) || z.min;
+    } else {
+      zoomUnit = 1; zoomMin = 1; zoomMax = 1; zoom = 1;
+    }
+  }
+
+  function stopLabel(f) {
+    // .5x rather than 0.5x — it is what phone camera apps show, and it keeps
+    // every pill the same width.
+    return (f < 1 ? String(f).replace('0.', '.') : String(f)) + 'x';
   }
 
   // One row of focal-length buttons, the way a phone's own camera app works.
@@ -383,12 +405,25 @@
         });
       });
     } else if (nativeZoom) {
-      [1, 2, 4, 8].forEach(function (f) {
-        var v = zoomMin * f;
-        if (f === 1 || v <= zoomMax) {
-          stops.push({ label: f + 'x', deviceId: null, zoom: v, title: 'Sensor zoom ' + f + 'x' });
+      // Absolute focal lengths the sensor can actually reach. On a logical
+      // multi-camera these are exactly the thresholds where Android swaps the
+      // physical lens, so .5x lands on the ultra-wide and 5x on the periscope
+      // even though neither is enumerated as its own device.
+      var lo = zoomMin / zoomUnit, hi = zoomMax / zoomUnit;
+      [0.5, 1, 2, 3, 5, 10].forEach(function (f) {
+        if (f >= lo - 1e-6 && f <= hi + 1e-6) {
+          stops.push({ label: stopLabel(f), deviceId: null, zoom: f * zoomUnit,
+                       title: 'Zoom ' + stopLabel(f) });
         }
       });
+      // A narrow range (say 1.0-1.8) matches nothing on the ladder; fall back
+      // to the ends so the control is never a single dead button.
+      if (stops.length < 2) {
+        stops = [
+          { label: stopLabel(Math.round(lo * 10) / 10), deviceId: null, zoom: zoomMin, title: 'Widest' },
+          { label: stopLabel(Math.round(hi * 10) / 10), deviceId: null, zoom: zoomMax, title: 'Closest' },
+        ];
+      }
     } else {
       // Nothing but pixels to work with. Still worth offering: it does not add
       // detail, but it lets someone frame a distant code inside the reticle,
@@ -404,7 +439,7 @@
     for (var i = 0; i < stops.length; i++) {
       if (stops[i].deviceId) {
         if (stops[i].deviceId === curDeviceId) return i;
-      } else if (Math.abs(stops[i].zoom - zoom) < 0.01) {
+      } else if (Math.abs(stops[i].zoom - zoom) < 0.01 * zoomUnit) {
         return i;
       }
     }
@@ -430,7 +465,7 @@
   function applyZoom() {
     // `zoom` is in whatever units the track reports; `factor` is always a plain
     // multiplier, which is what the CSS scale and the decode crop both want.
-    var factor = zoom / zoomMin;
+    var factor = zoom / zoomUnit;
     if (nativeZoom && track) {
       // The sensor crop moves, so the decode window stays where it is.
       track.applyConstraints({ advanced: [{ zoom: zoom }] }).catch(function () {});
@@ -438,6 +473,24 @@
     } else {
       video.style.transform = factor > 1 ? 'scale(' + factor + ')' : '';
     }
+  }
+
+  // No console on a phone, and the token is scrubbed from the URL as soon as
+  // the page loads — so long-pressing the stop row is the practical way back
+  // into the readout once something looks wrong.
+  function armDebugToggle() {
+    var t = null;
+    stopsEl.addEventListener('touchstart', function () {
+      t = setTimeout(function () {
+        DEBUG = !DEBUG;
+        localStorage.setItem('scan_debug', DEBUG ? '1' : '0');
+        diagEl.hidden = !DEBUG;
+        renderDiag();
+      }, 800);
+    });
+    ['touchend', 'touchmove', 'touchcancel'].forEach(function (ev) {
+      stopsEl.addEventListener(ev, function () { clearTimeout(t); });
+    });
   }
 
   async function syncControls() {
@@ -529,7 +582,7 @@
     if (!vw || !vh) return null;
     // The preview is object-fit: cover inside a square, so what the user can
     // actually see is the largest centred square of the frame.
-    var side = Math.min(vw, vh) * RETICLE / (nativeZoom ? 1 : zoom / zoomMin);
+    var side = Math.min(vw, vh) * RETICLE / (nativeZoom ? 1 : zoom / zoomUnit);
     var sx = (vw - side) / 2, sy = (vh - side) / 2;
     // 640 is the knee: dropping to 512 saves ~40% of the decode cost but
     // starts losing codes that only just resolve at arm's length.
@@ -681,6 +734,7 @@
     start();
   });
 
+  armDebugToggle();
   showWho();
   start();
 })();
