@@ -27,8 +27,12 @@ import tempfile
 # Must be set before webserver/config are imported — they read env at import.
 os.environ.setdefault("SCAN_SECRET", "devsecret")
 
+# Stand-in Discord user the dev token is minted for.
+DEV_USER_ID = 123456789012345678
+
 from attendance_bot.scanner.webserver import start_web_server  # noqa: E402
 from attendance_bot.config import SCAN_SECRET, log  # noqa: E402
+from attendance_bot.scanner.tokens import mint_scan_token  # noqa: E402
 
 
 def lan_ip() -> str:
@@ -87,27 +91,49 @@ def self_signed_cert(host_ip: str) -> ssl.SSLContext:
     return ctx
 
 
-async def fake_scan(url: str) -> dict:
+async def fake_scan(url: str, channel_id=None, scanner_id=None) -> dict:
     """Stand-in for the real check-in — prints instead of logging anyone in."""
     print("\n" + "=" * 70)
     print("  SCAN RECEIVED")
     print("  " + url)
+    print("  channel: %s   scanner: %s" % (channel_id or "-", scanner_id or "anonymous"))
     print("=" * 70 + "\n")
     await asyncio.sleep(1)  # pretend the check-in takes a moment
     return {"message": "✅ Dev mode — bot received the link.\nCheck the terminal.",
             "attempted": 0, "succeeded": 0, "duplicate": False}
 
 
+async def fake_scan_cdd(sid: str, nonce: str, channel_id=None, scanner_id=None) -> dict:
+    """Stand-in for a ClassDeeDee QR scan."""
+    print("\n" + "=" * 70)
+    print("  CLASSDEEDEE SCAN RECEIVED")
+    print("  sid=%s  nonce=%s" % (sid, nonce))
+    print("  channel: %s   scanner: %s" % (channel_id or "-", scanner_id or "anonymous"))
+    print("=" * 70 + "\n")
+    await asyncio.sleep(1)  # pretend the check-in takes a moment
+    return {"message": "✅ Dev mode — bot received the ClassDeeDee QR.\nCheck the terminal.",
+            "attempted": 0, "succeeded": 0, "duplicate": False}
+
+
+async def fake_identify(user_id: str) -> dict:
+    """Stand-in identity so the page's chip can be exercised locally."""
+    return {"id": user_id, "name": "Dev User #" + user_id[-4:], "avatar": "", "registered": True}
+
+
 async def main(use_https: bool, port: int) -> None:
     ip = lan_ip()
     ctx = self_signed_cert(ip) if use_https else None
-    await start_web_server(fake_scan, port=port, ssl_context=ctx)
+    # A real per-user token, so dev exercises the same auth path as production
+    # (including the identity chip) rather than the legacy shared secret.
+    token = mint_scan_token(DEV_USER_ID)
+    await start_web_server(fake_scan, on_scan_cdd=fake_scan_cdd,
+                           on_identify=fake_identify, port=port, ssl_context=ctx)
 
     scheme = "https" if use_https else "http"
     print("\n  Scanner running in DEV mode — no check-ins will happen.\n")
-    print(f"  Desktop webcam:  {scheme}://localhost:{port}/scan#t={SCAN_SECRET}")
+    print(f"  Desktop webcam:  {scheme}://localhost:{port}/scan#t={token}")
     if use_https:
-        print(f"  Phone (same Wi-Fi): https://{ip}:{port}/scan#t={SCAN_SECRET}")
+        print(f"  Phone (same Wi-Fi): https://{ip}:{port}/scan#t={token}")
         print("\n  Your phone will warn about the self-signed certificate.")
         print("  Tap Advanced -> Proceed. The camera needs HTTPS to work at all.")
     else:

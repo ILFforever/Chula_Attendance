@@ -1,9 +1,9 @@
 """Consolidated /settings panel — one Components V2 message covering the
 personal controls that would otherwise need their own slash command to
 check or change: notification preferences (homework digest, deadline
-reminder), automatic check-in + course enrollment, ClassDeeDee (its own
-card — see _build_classdeedee_card for why it doesn't fit under either of
-the other two), and account management. Server/channel-scoped commands
+reminder), the user's own added assignments, automatic check-in + course
+enrollment, ClassDeeDee (its own card — see _build_classdeedee_card for why
+it doesn't fit under either of the other two), and account management. Server/channel-scoped commands
 (/monitor, /leaderboard, etc.) stay out of scope — this is about the
 individual user's own account.
 
@@ -17,6 +17,10 @@ opens a short second ephemeral message with one "Remove" button per
 enrolled course — deliberately not a Select, so this stays consistent with
 homework/dm.py's own "View finished items" list pattern.
 
+The five sections are tabs, not one long scroll: a nav ActionRow lives in
+the always-pinned identity card, and clicking a tab edits the message in
+place to swap the single section card below it (see build_settings_view).
+
 Custom IDs use a "cfg:" prefix and are routed by a raw on_interaction
 listener (not View callbacks), so a click keeps working even after a bot
 restart — same reasoning as homework/dm.py's "hw:"/"hwctl:" listener.
@@ -26,7 +30,16 @@ from __future__ import annotations
 import discord
 from discord import ui
 
-from attendance_bot.config import log, registered_users, persist_users
+from attendance_bot.config import (
+    log,
+    registered_users,
+    persist_users,
+    purge_custom_assignments_for_user,
+    list_custom_assignments,
+    MAX_CUSTOM_ASSIGNMENTS,
+    MAX_CUSTOM_COURSE,
+    MAX_CUSTOM_DESC,
+)
 from attendance_bot.homework.dm import (
     DEFAULT_HOMEWORK_HOUR,
     DEFAULT_DEADLINE_REMINDER_HOURS,
@@ -34,6 +47,12 @@ from attendance_bot.homework.dm import (
     MAX_DEADLINE_REMINDER_HOURS,
 )
 from attendance_bot.classdeedee.attendance import classdeedee_purpose_enabled
+from attendance_bot.homework.custom import (
+    AssignmentError,
+    build_assignment_list_view,
+    create_assignment,
+    format_due,
+)
 
 
 # The bot's own brand pink (matches docs/index.html's --pink token) — used as
@@ -61,6 +80,60 @@ def _toggle_button(*, enabled: bool, label_suffix: str = "", custom_id: str) -> 
     )
 
 
+# The panel is paginated rather than one long scroll: the identity card and
+# its nav row are always rendered, and exactly one section card below them.
+# Four sections at ~10 components each would sit near Discord's 40-component
+# ceiling (see the note below) with no room left for the nav row itself, so
+# tabs buy headroom as well as legibility.
+# Five tabs is the ceiling here, not a coincidence: an ActionRow holds at
+# most 5 buttons, so a sixth section would need a second nav row.
+_PAGES: list[tuple[str, str, str]] = [
+    ("notifications", "Notifications", "🔔"),
+    ("assignments", "Assignments", "📌"),
+    ("attendance", "Attendance", "📝"),
+    ("classdeedee", "ClassDeeDee", "🎓"),
+    ("account", "Account", "⚙"),
+]
+DEFAULT_PAGE = _PAGES[0][0]
+
+# Which page each "cfg:" control lives on, so flipping a toggle or submitting
+# a modal re-renders the page the user was already on instead of bouncing
+# them back to the default one.
+_PAGE_FOR_KIND = {
+    "hwtoggle": "notifications",
+    "hwtime": "notifications",
+    "drtoggle": "notifications",
+    "drtime": "notifications",
+    "addassignment": "assignments",
+    "manageassignments": "assignments",
+    "checkintoggle": "attendance",
+    "addcourse": "attendance",
+    "managecourses": "attendance",
+    "cddcheckintoggle": "classdeedee",
+    "cddhwtoggle": "classdeedee",
+    "unlinkcdd": "account",
+    "delaccount": "account",
+}
+
+
+def _build_nav_row(uid: str, active: str) -> ui.ActionRow:
+    """The tab strip. The active tab renders primary + disabled — "you are
+    here", and a click on it would only re-send the page already on screen.
+    Page lives in a 4th custom_id segment (like "cfg:rmcourse:"), so the nav
+    survives a restart the same way every other control here does.
+    """
+    return ui.ActionRow(*[
+        ui.Button(
+            style=discord.ButtonStyle.primary if key == active else discord.ButtonStyle.secondary,
+            label=label,
+            emoji=emoji,
+            disabled=key == active,
+            custom_id=f"cfg:nav:{uid}:{key}",
+        )
+        for key, label, emoji in _PAGES
+    ])
+
+
 # Discord's message-component budget is a flat 40 components per message,
 # counted recursively across the whole view — a Container, a Section, and
 # each TextDisplay/Button/Separator inside one all count individually. With
@@ -68,9 +141,11 @@ def _toggle_button(*, enabled: bool, label_suffix: str = "", custom_id: str) -> 
 # that (43 vs. the 40 cap). TextDisplay natively renders multi-line Markdown
 # in one component, so every card below joins its lines with "\n" into as
 # few TextDisplay components as layout allows, instead of one per line.
-def _build_identity_card(user: discord.abc.User, info: dict) -> ui.Container:
-    """The info-panel header: avatar, display name, @handle, Discord ID, and
-    (when registered) the MyCourseVille username/login method.
+def _build_identity_card(user: discord.abc.User, info: dict, active_page: str) -> ui.Container:
+    """The pinned header: avatar, display name, @handle, Discord ID,
+    (when registered) the MyCourseVille username/login method, and the nav
+    row. Always on screen, so the user keeps their bearings while the
+    section card below them changes.
     """
     lines = [f"# {user.display_name}", f"-# @{user.name} · ID `{user.id}`"]
     mcv_username = info.get("username")
@@ -82,7 +157,12 @@ def _build_identity_card(user: discord.abc.User, info: dict) -> ui.Container:
         ui.TextDisplay("\n".join(lines)),
         accessory=ui.Thumbnail(media=user.display_avatar.url),
     )
-    return ui.Container(identity, accent_colour=BRAND_ACCENT)
+    return ui.Container(
+        identity,
+        ui.Separator(),
+        _build_nav_row(str(user.id), active_page),
+        accent_colour=BRAND_ACCENT,
+    )
 
 
 def _build_notifications_card(uid: str, info: dict) -> ui.Container:
@@ -176,6 +256,52 @@ def _build_attendance_card(uid: str, info: dict) -> ui.Container:
     )
 
 
+def _build_assignments_card(uid: str, info: dict) -> ui.Container:
+    """Assignments the user typed in themselves (/homeworkadd).
+
+    Summary + two buttons rather than the list itself, mirroring the
+    Attendance card's "Add course"/"Manage courses" pair: the full list
+    with its per-item Delete buttons opens as a second ephemeral message
+    (build_assignment_list_view), which keeps this page's component count
+    flat no matter how many assignments someone has.
+    """
+    entries = list_custom_assignments(uid)
+
+    lines = [
+        "# Assignments",
+        "-# Your own deadlines, shown in the digest next to MyCourseVille and ClassDeeDee work",
+    ]
+    if entries:
+        _, soonest = entries[0]
+        lines.append(f"**{len(entries)} of {MAX_CUSTOM_ASSIGNMENTS}** added")
+        lines.append(
+            f"-# Next up: {soonest.get('desc') or 'Untitled'} · "
+            f"`{soonest.get('course_code') or '?'}` · {format_due(soonest.get('due_dt', ''))}"
+        )
+    else:
+        lines.append("-# Nothing added yet — anything with a deadline the platforms don't list.")
+
+    buttons = [
+        ui.Button(
+            style=discord.ButtonStyle.secondary, label="Add assignment",
+            custom_id=_cfg_id("addassignment", uid),
+            disabled=len(entries) >= MAX_CUSTOM_ASSIGNMENTS,
+        ),
+    ]
+    if entries:
+        buttons.append(ui.Button(
+            style=discord.ButtonStyle.secondary, label="Manage assignments",
+            custom_id=_cfg_id("manageassignments", uid),
+        ))
+
+    return ui.Container(
+        ui.TextDisplay("\n".join(lines)),
+        ui.Separator(),
+        ui.ActionRow(*buttons),
+        accent_colour=BRAND_ACCENT,
+    )
+
+
 def _build_account_card(uid: str, info: dict) -> ui.Container:
     """Destructive actions only — both gated behind a type-to-confirm modal
     (see ConfirmUnlinkClassDeeDeeModal / ConfirmDeleteAccountModal) since a
@@ -209,22 +335,34 @@ def _build_account_card(uid: str, info: dict) -> ui.Container:
     )
 
 
-def build_settings_view(user: discord.abc.User) -> ui.LayoutView:
+# Keys must match _PAGES; every builder takes (uid, info) so the dispatch in
+# build_settings_view stays a plain lookup.
+_PAGE_BUILDERS = {
+    "notifications": _build_notifications_card,
+    "assignments": _build_assignments_card,
+    "attendance": _build_attendance_card,
+    "classdeedee": _build_classdeedee_card,
+    "account": _build_account_card,
+}
+
+
+def build_settings_view(user: discord.abc.User, page: str = DEFAULT_PAGE) -> ui.LayoutView:
     """Rebuilt fresh on every render (initial send, and after every click)
-    so it always reflects registered_users' current state. Five Container
-    cards — identity, notifications, attendance (incl. courses), classdeedee,
-    account — each carrying the same brand-pink accent bar so the panel
-    reads as one surface, not a stack of unrelated message blocks.
+    so it always reflects registered_users' current state. Two Container
+    cards — the pinned identity/nav header and whichever section the nav row
+    currently has selected — both carrying the same brand-pink accent bar so
+    the panel reads as one surface, not a stack of unrelated message blocks.
     """
     uid = str(user.id)
     info = registered_users.get(uid, {})
+    # An unknown page (a stale custom_id from before a page was renamed)
+    # falls back rather than raising — the click still shows something.
+    if page not in _PAGE_BUILDERS:
+        page = DEFAULT_PAGE
 
     view = ui.LayoutView(timeout=None)
-    view.add_item(_build_identity_card(user, info))
-    view.add_item(_build_notifications_card(uid, info))
-    view.add_item(_build_attendance_card(uid, info))
-    view.add_item(_build_classdeedee_card(uid, info))
-    view.add_item(_build_account_card(uid, info))
+    view.add_item(_build_identity_card(user, info, page))
+    view.add_item(_PAGE_BUILDERS[page](uid, info))
     return view
 
 
@@ -269,7 +407,9 @@ class HomeworkTimeSettingsModal(ui.Modal, title="Homework digest time"):
         registered_users.setdefault(self.uid, {})["homework_check_hour"] = hour
         persist_users()
         log.info("User %s set homework check hour to %d (via /settings)", self.uid, hour)
-        await interaction.response.edit_message(view=build_settings_view(interaction.user))
+        await interaction.response.edit_message(
+            view=build_settings_view(interaction.user, _PAGE_FOR_KIND["hwtime"])
+        )
 
 
 class DeadlineReminderHoursModal(ui.Modal, title="Deadline reminder window"):
@@ -299,7 +439,9 @@ class DeadlineReminderHoursModal(ui.Modal, title="Deadline reminder window"):
         registered_users.setdefault(self.uid, {})["deadline_reminder_hours"] = hours
         persist_users()
         log.info("User %s set deadline reminder window to %dh (via /settings)", self.uid, hours)
-        await interaction.response.edit_message(view=build_settings_view(interaction.user))
+        await interaction.response.edit_message(
+            view=build_settings_view(interaction.user, _PAGE_FOR_KIND["drtime"])
+        )
 
 
 class AddCourseModal(ui.Modal, title="Add a course"):
@@ -324,7 +466,53 @@ class AddCourseModal(ui.Modal, title="Add a course"):
             persist_users()
             log.info("User %s enrolled in course %s (via /settings)", self.uid, raw)
 
-        await interaction.response.edit_message(view=build_settings_view(interaction.user))
+        await interaction.response.edit_message(
+            view=build_settings_view(interaction.user, _PAGE_FOR_KIND["addcourse"])
+        )
+
+
+class AddAssignmentModal(ui.Modal, title="Add an assignment"):
+    """The /settings twin of /homeworkadd.
+
+    Four separate inputs rather than one "when is it due" field: a modal
+    can't validate as you type, so splitting date from time keeps the error
+    message specific about which half didn't parse. Everything past reading
+    the fields — validation, the course-name lookup, the write — is
+    homework/custom.py's create_assignment, so both entry points can't drift.
+    """
+    course_input = ui.TextInput(
+        label="Course", placeholder="e.g. 2110405, or a label like Thesis", max_length=MAX_CUSTOM_COURSE,
+    )
+    desc_input = ui.TextInput(
+        label="What's due", placeholder="e.g. Lab 4 writeup", max_length=MAX_CUSTOM_DESC,
+    )
+    date_input = ui.TextInput(label="Date", placeholder="2026-09-12 · 12/09 · today · tomorrow · fri", max_length=32)
+    time_input = ui.TextInput(
+        label="Time (optional)", placeholder="23:59 · 5pm · noon — blank for end of day",
+        max_length=16, required=False,
+    )
+
+    def __init__(self, uid: str):
+        super().__init__()
+        self.uid = uid
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            rec = await create_assignment(
+                self.uid,
+                course=self.course_input.value,
+                desc=self.desc_input.value,
+                due_date=self.date_input.value,
+                due_time=self.time_input.value or "",
+            )
+        except AssignmentError as exc:
+            # Its own message, not an edit of the panel: the panel is still
+            # on screen behind this, and the user needs to see what to retype.
+            await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+            return
+
+        log.info("User %s added a custom assignment for %s (via /settings)", self.uid, rec["course_code"])
+        await interaction.response.edit_message(view=build_settings_view(interaction.user, "assignments"))
 
 
 class ConfirmUnlinkClassDeeDeeModal(ui.Modal, title="Unlink ClassDeeDee"):
@@ -347,7 +535,9 @@ class ConfirmUnlinkClassDeeDeeModal(ui.Modal, title="Unlink ClassDeeDee"):
             persist_users()
             log.info("User %s unlinked ClassDeeDee (via /settings)", self.uid)
 
-        await interaction.response.edit_message(view=build_settings_view(interaction.user))
+        await interaction.response.edit_message(
+            view=build_settings_view(interaction.user, _PAGE_FOR_KIND["unlinkcdd"])
+        )
 
 
 class ConfirmDeleteAccountModal(ui.Modal, title="Delete your account"):
@@ -366,6 +556,7 @@ class ConfirmDeleteAccountModal(ui.Modal, title="Delete your account"):
 
         registered_users.pop(self.uid, None)
         persist_users()
+        purge_custom_assignments_for_user(self.uid)
         log.info("User %s deleted their account (via /settings)", self.uid)
 
         deleted_view = ui.LayoutView(timeout=None)
@@ -384,6 +575,14 @@ async def handle_settings_interaction(interaction: discord.Interaction) -> None:
         return
     custom_id = (interaction.data or {}).get("custom_id", "")
     if not custom_id.startswith("cfg:"):
+        return
+
+    if custom_id.startswith("cfg:nav:"):
+        _, _, uid, page = custom_id.split(":", 3)
+        if str(interaction.user.id) != uid:
+            await interaction.response.send_message("This isn't your settings panel.", ephemeral=True)
+            return
+        await interaction.response.edit_message(view=build_settings_view(interaction.user, page))
         return
 
     if custom_id.startswith("cfg:rmcourse:"):
@@ -421,6 +620,14 @@ async def handle_settings_interaction(interaction: discord.Interaction) -> None:
         return
     if kind == "addcourse":
         await interaction.response.send_modal(AddCourseModal(uid))
+        return
+    if kind == "addassignment":
+        await interaction.response.send_modal(AddAssignmentModal(uid))
+        return
+    if kind == "manageassignments":
+        # The same view /homeworklist opens, with its own "hwc:" delete
+        # buttons — routed by homework/custom.py, not by this module.
+        await interaction.response.send_message(view=build_assignment_list_view(uid), ephemeral=True)
         return
     if kind == "managecourses":
         await interaction.response.send_message(view=build_manage_courses_view(uid), ephemeral=True)
@@ -461,4 +668,6 @@ async def handle_settings_interaction(interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         return
 
-    await interaction.response.edit_message(view=build_settings_view(interaction.user))
+    await interaction.response.edit_message(
+        view=build_settings_view(interaction.user, _PAGE_FOR_KIND.get(kind, DEFAULT_PAGE))
+    )

@@ -87,6 +87,50 @@
   input[type="url"]:focus { outline: none; border-color: var(--accent); }
   input[type="url"]::placeholder { color: #5c6672; }
 
+  #who {
+    display: flex; align-items: center; gap: 10px;
+    margin: 0 0 14px; padding: 8px 12px 8px 8px;
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 999px;
+  }
+  #who[hidden] { display: none; }
+  #whoAvatar {
+    width: 30px; height: 30px; border-radius: 50%;
+    background: var(--line); flex: 0 0 auto; object-fit: cover;
+  }
+  #whoText { min-width: 0; font-size: 13px; line-height: 1.3; }
+  #whoName { font-weight: 600; display: block; overflow: hidden;
+             text-overflow: ellipsis; white-space: nowrap; }
+  #whoNote { color: var(--muted); font-size: 11px; }
+  #who.warn { border-color: var(--err); }
+  #who.warn #whoNote { color: var(--err); }
+
+  #controls {
+    display: flex; align-items: center; gap: 10px;
+    margin-top: 10px; min-height: 34px;
+  }
+  #controls[hidden] { display: none; }
+  #lenses { display: flex; gap: 6px; flex: 0 0 auto; }
+  #lenses button {
+    width: auto; margin: 0; padding: 6px 11px;
+    font-size: 12px; font-weight: 600;
+    color: var(--muted); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 999px;
+  }
+  #lenses button.on {
+    color: #fff; background: var(--accent); border-color: var(--accent);
+  }
+  #zoomWrap {
+    display: flex; align-items: center; gap: 9px;
+    flex: 1 1 auto; min-width: 0;
+  }
+  #zoomWrap[hidden] { display: none; }
+  #zoom { flex: 1 1 auto; min-width: 0; accent-color: var(--accent); }
+  #zoomVal {
+    color: var(--muted); font-size: 12px;
+    min-width: 32px; text-align: right; font-variant-numeric: tabular-nums;
+  }
+
   .foot { margin-top: 20px; color: var(--muted); font-size: 12px; }
   .foot a { color: var(--muted); }
 </style>
@@ -96,12 +140,28 @@
   <h1>Attendance Scanner</h1>
   <p class="sub">Point at the classroom QR code. Decoding happens on this device — only the link is sent to the bot, which checks in <strong>everyone registered</strong>.</p>
 
+  <div id="who" hidden>
+    <img id="whoAvatar" alt="" width="30" height="30">
+    <span id="whoText">
+      <span id="whoName"></span>
+      <span id="whoNote"></span>
+    </span>
+  </div>
+
   <div id="viewport">
     <video id="video" playsinline muted></video>
     <div id="reticle"></div>
   </div>
 
-  <p id="status">Starting camera…</p>
+  <div id="controls" hidden>
+    <div id="lenses"></div>
+    <div id="zoomWrap" hidden>
+      <input type="range" id="zoom" min="1" max="4" step="0.1" value="1" aria-label="Zoom">
+      <span id="zoomVal">1.0x</span>
+    </div>
+  </div>
+
+  <p id="status" role="status" aria-live="polite">Starting camera…</p>
   <button id="again" hidden>Scan another</button>
 
   <div class="divider">or paste a link</div>
@@ -113,8 +173,9 @@
   </form>
 
   <p class="foot">
-    Saved on this device — bookmark this page or add it to your home screen and it'll
-    keep working. <a href="#" id="forget">Forget this device</a> if it's not yours.
+    This link is yours alone — check-ins you make are posted under your name. Bookmark
+    this page or add it to your home screen and it'll keep working.
+    <a href="#" id="forget">Forget this device</a> if it's not yours.
   </p>
 </main>
 
@@ -136,12 +197,31 @@
   var pasteForm= document.getElementById('pasteForm');
   var pasteUrl = document.getElementById('pasteUrl');
   var pasteGo  = document.getElementById('pasteGo');
+  var whoEl    = document.getElementById('who');
+  var whoAvatar= document.getElementById('whoAvatar');
+  var whoName  = document.getElementById('whoName');
+  var whoNote  = document.getElementById('whoNote');
   var canvas   = document.createElement('canvas');
   var ctx      = canvas.getContext('2d', { willReadFrequently: true });
 
+  var controls = document.getElementById('controls');
+  var lensesEl = document.getElementById('lenses');
+  var zoomWrap = document.getElementById('zoomWrap');
+  var zoomEl   = document.getElementById('zoom');
+  var zoomVal  = document.getElementById('zoomVal');
+
   var detector = null;
   var timer    = null;
+  var rvfcId   = 0;
   var halted   = false;
+  var track    = null;       // live video track - zoom capabilities hang off this
+  var lenses   = [];         // back-facing cameras worth offering as a choice
+  var lensIdx  = 0;
+  var nativeZoom = false;    // does the track expose a real zoom capability?
+  var zoom     = 1;
+  var zoomMin  = 1;          // 1 on most devices, 100 where zoom is a percentage
+  var pass     = 0;
+  var runId    = 0;          // bumped on every teardown; stale ticks bail out
 
   // Token arrives in the fragment so it never reaches the server in a request
   // line. Stash it in localStorage — that way the bare /scan URL keeps working
@@ -164,17 +244,253 @@
     history.replaceState(null, '', location.pathname);
   }
 
+  // Ask the bot who this saved token belongs to. Purely informational — the
+  // server re-verifies the token on every scan — but it means whoever picks up
+  // the phone can see the check-in will be posted under *that* name, and spot a
+  // borrowed or stale link before using it.
+  async function showWho() {
+    if (!secret) return;
+    try {
+      var r = await fetch('/api/me', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ secret: secret })
+      });
+      if (!r.ok) return;
+      var me = await r.json();
+      if (me.anonymous || !me.name) {
+        whoName.textContent = 'Shared scanner link';
+        whoNote.textContent = 'Scans are anonymous — run /scanner for a link of your own.';
+        whoAvatar.hidden = true;
+        whoEl.hidden = false;
+        return;
+      }
+      whoName.textContent = me.name;
+      whoNote.textContent = me.registered
+        ? 'Check-ins are posted under your name.'
+        : "You're not registered — you can still check everyone else in.";
+      if (me.avatar) { whoAvatar.src = me.avatar; whoAvatar.hidden = false; }
+      else { whoAvatar.hidden = true; }
+      whoEl.classList.toggle('warn', !me.registered);
+      whoEl.hidden = false;
+    } catch (e) { /* identity is a nicety — never block scanning on it */ }
+  }
+
   function say(msg, cls) {
     statusEl.textContent = msg;
     statusEl.className = cls || '';
   }
 
-  function stop() {
-    halted = true;
+  function stopStream() {
+    // Any tick suspended mid-await belongs to the old run now. Without this a
+    // lens switch leaves the previous chain alive: the in-flight tick resumes
+    // after the teardown, sees halted still false, and schedules itself again
+    // while switchLens starts a second chain. Three switches, four loops.
+    runId++;
+    if (rvfcId && video.cancelVideoFrameCallback) {
+      try { video.cancelVideoFrameCallback(rvfcId); } catch (e) {}
+    }
+    rvfcId = 0;
     clearTimeout(timer);
     var s = video.srcObject;
     if (s) s.getTracks().forEach(function (t) { t.stop(); });
     video.srcObject = null;
+    track = null;
+  }
+
+  function stop() {
+    halted = true;
+    controls.hidden = true;
+    stopStream();
+  }
+
+  // Ask for a high-resolution stream. This used to take whatever the browser
+  // offered — typically 640x480 — which is the real reason a QR on a big
+  // lecture-hall projector never resolved: at that size its modules land on
+  // barely more than a pixel each, and no amount of frame rate rescues that.
+  async function openCamera(deviceId) {
+    var want = deviceId
+      ? { deviceId: { exact: deviceId } }
+      : { facingMode: { ideal: 'environment' } };
+    want.width  = { ideal: 1920 };
+    want.height = { ideal: 1080 };
+    var stream = await navigator.mediaDevices.getUserMedia({ video: want, audio: false });
+    video.srcObject = stream;
+    track = stream.getVideoTracks()[0] || null;
+    await video.play();
+  }
+
+  function lensLabel(label, i) {
+    var l = (label || '').toLowerCase();
+    if (l.indexOf('ultra') > -1) return '0.5x';
+    if (l.indexOf('telephoto') > -1 || l.indexOf('tele') > -1) return '3x';
+    if (l.indexOf('wide') > -1 || l.indexOf('dual') > -1 || l.indexOf('triple') > -1) return '1x';
+    return String(i + 1);
+  }
+
+  function paintLenses() {
+    var kids = lensesEl.children;
+    for (var i = 0; i < kids.length; i++) kids[i].classList.toggle('on', i === lensIdx);
+  }
+
+  // Capabilities differ per lens, so this re-runs on every camera change.
+  async function setupControls() {
+    lenses = [];
+    try {
+      // Device labels are blank until camera permission is granted, so this
+      // has to happen after openCamera rather than before it.
+      var devs = await navigator.mediaDevices.enumerateDevices();
+      var cams = devs.filter(function (d) { return d.kind === 'videoinput'; });
+      var back = cams.filter(function (d) { return /back|rear|environment/i.test(d.label); });
+      // A front camera is never useful here. Fall back to the full list only
+      // when the labels gave us nothing to filter on.
+      lenses = (back.length ? back : cams).slice(0, 4);
+    } catch (e) { lenses = []; }
+
+    var current = (track && track.getSettings) ? track.getSettings().deviceId : null;
+    lensIdx = 0;
+    lensesEl.innerHTML = '';
+    if (lenses.length > 1) {
+      lenses.forEach(function (d, i) {
+        if (d.deviceId === current) lensIdx = i;
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = lensLabel(d.label, i);
+        b.title = d.label || ('Camera ' + (i + 1));
+        b.addEventListener('click', function () { switchLens(i); });
+        lensesEl.appendChild(b);
+      });
+    }
+    paintLenses();
+
+    // A native zoom is an optical or sensor-level crop and always beats scaling
+    // pixels after the fact — but Safari does not expose one, so fall back to a
+    // digital zoom that enlarges the preview and narrows the decode window by
+    // the same factor. On iOS the telephoto lens button is the better answer.
+    var caps = (track && track.getCapabilities) ? (track.getCapabilities() || {}) : {};
+    var z = caps.zoom;
+    nativeZoom = !!(z && z.max > z.min);
+    if (nativeZoom) {
+      // Not every device reports zoom as a multiplier from 1 — some Androids
+      // use a percentage (min 100, max 400). Anchor the cap and the readout to
+      // whatever the minimum turns out to be, so 8x means eight times the
+      // widest view either way, and a reported min of 0 cannot collapse the
+      // range to nothing.
+      zoomMin = z.min > 0 ? z.min : 1;
+      zoomEl.min  = z.min;
+      zoomEl.max  = Math.min(z.max, zoomMin * 8);
+      zoomEl.step = z.step || zoomMin / 20;
+      zoom = track.getSettings().zoom || z.min;
+    } else {
+      zoomMin = 1;
+      zoomEl.min = 1; zoomEl.max = 4; zoomEl.step = 0.1;
+      zoom = 1;
+    }
+    zoomEl.value = zoom;
+    applyZoom();
+    zoomWrap.hidden = false;
+    controls.hidden = false;
+  }
+
+  function applyZoom() {
+    // `zoom` is in whatever units the track reports; `factor` is always a plain
+    // multiplier, which is what the readout, the CSS scale and the decode crop
+    // all want. Keeps a percentage-based value from ever reaching scale().
+    var factor = zoom / zoomMin;
+    zoomVal.textContent = (Math.round(factor * 10) / 10) + 'x';
+    if (nativeZoom && track) {
+      // The sensor crop moves, so the decode window stays where it is.
+      track.applyConstraints({ advanced: [{ zoom: zoom }] }).catch(function () {});
+      video.style.transform = '';
+    } else {
+      video.style.transform = factor > 1 ? 'scale(' + factor + ')' : '';
+    }
+  }
+
+  zoomEl.addEventListener('input', function () {
+    zoom = parseFloat(zoomEl.value) || 1;
+    applyZoom();
+  });
+
+  async function switchLens(i) {
+    if (i === lensIdx || !lenses[i]) return;
+    var prev = lensIdx;
+    lensIdx = i;
+    paintLenses();
+    stopStream();
+    try {
+      await openCamera(lenses[i].deviceId);
+    } catch (e) {
+      // Some cameras enumerate but refuse to open. Crawl back to the one that
+      // was working rather than leaving a dead viewport.
+      lensIdx = prev;
+      paintLenses();
+      say('That camera would not open — staying on the previous one.', 'error');
+      try { await openCamera(lenses[prev].deviceId); }
+      catch (e2) {
+        // Neither camera will open. Leave a way back rather than a dead
+        // viewport with no control on the page still enabled.
+        stop();
+        againBtn.hidden = false;
+        return;
+      }
+    }
+    await setupControls();
+    if (!halted) loop();
+  }
+
+  // The reticle covers the middle 64% of the frame (inset: 18%) and that is
+  // where people aim, so decode that window at close to native resolution
+  // rather than the whole frame shrunk to 480 wide. It is not cheaper than the
+  // old downscale — measured on a typical frame it costs about 17ms against
+  // 12ms — but far more of those pixels land on the code itself, which is what
+  // lets a distant one resolve at all. Scanning the raw 1920x1080 frame instead
+  // would cost ~160ms, roughly 9x this, so the crop is what makes the higher
+  // capture resolution affordable. Digital zoom narrows the window further to
+  // match the enlarged preview.
+  var RETICLE = 0.64;
+
+  function decodeCrop() {
+    var vw = video.videoWidth, vh = video.videoHeight;
+    if (!vw || !vh) return null;
+    // The preview is object-fit: cover inside a square, so what the user can
+    // actually see is the largest centred square of the frame.
+    var side = Math.min(vw, vh) * RETICLE / (nativeZoom ? 1 : zoom / zoomMin);
+    var sx = (vw - side) / 2, sy = (vh - side) / 2;
+    // 640 is the knee: dropping to 512 saves ~40% of the decode cost but
+    // starts losing codes that only just resolve at arm's length.
+    var n = Math.min(640, Math.round(side));
+    if (n < 8) return null;
+    canvas.width = n; canvas.height = n;
+    ctx.drawImage(video, sx, sy, side, side, 0, 0, n, n);
+    return jsQR(ctx.getImageData(0, 0, n, n).data, n, n, { inversionAttempts: 'dontInvert' });
+  }
+
+  function decodeFull() {
+    var vw = video.videoWidth, vh = video.videoHeight;
+    if (!vw) return null;
+    var w = 480, h = Math.round(vh * (480 / vw));
+    canvas.width = w; canvas.height = h;
+    ctx.drawImage(video, 0, 0, w, h);
+    return jsQR(ctx.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: 'dontInvert' });
+  }
+
+  // Drive the decode off the camera's own frame callback where there is one:
+  // one pass per delivered frame, with no fixed sleep in between. The old
+  // setTimeout(tick, 120) capped detection at roughly 8 tries a second however
+  // fast the decode itself ran — on the BarcodeDetector path, where a detect
+  // costs about 5ms, nearly all of that budget was spent idle.
+  function loop() {
+    if (halted) return;
+    var myRun = runId;
+    if (video.requestVideoFrameCallback) {
+      rvfcId = video.requestVideoFrameCallback(function () {
+        rvfcId = 0;
+        if (myRun === runId) tick(myRun);
+      });
+    } else {
+      timer = setTimeout(function () { if (myRun === runId) tick(myRun); }, 60);
+    }
   }
 
   async function start() {
@@ -188,12 +504,10 @@
       return;
     }
     try {
-      video.srcObject = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: 'environment' } }, audio: false
-      });
-      await video.play();
+      await openCamera(null);
     } catch (e) {
       viewport.hidden = true;
+      controls.hidden = true;
       say('Camera blocked (' + e.name + '). Allow access and reload, or paste the link below.', 'error');
       return;
     }
@@ -201,26 +515,33 @@
       try { detector = new BarcodeDetector({ formats: ['qr_code'] }); } catch (e) { detector = null; }
     }
     halted = false;
+    await setupControls();
     say('Looking for a QR code…');
-    tick();
+    loop();
   }
 
-  async function tick() {
-    if (halted) return;
+  async function tick(myRun) {
+    if (halted || myRun !== runId) return;
     var raw = null;
     try {
       if (detector) {
+        // Native detection reads the full frame and is cheap, so it gets the
+        // extra resolution for free — no cropping needed.
         var found = await detector.detect(video);
         if (found.length) raw = found[0].rawValue;
       } else if (video.videoWidth) {
-        // Downscale to 480px wide — plenty for jsQR and ~4x cheaper per frame.
-        var w = 480, h = Math.round(video.videoHeight * (480 / video.videoWidth));
-        canvas.width = w; canvas.height = h;
-        ctx.drawImage(video, 0, 0, w, h);
-        var res = jsQR(ctx.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: 'dontInvert' });
+        // Alternate windows: the tight crop catches a distant code, the cheap
+        // full frame (~6ms) still catches one held off to the side of the
+        // reticle and keeps the loop moving when a grainy low-light frame makes
+        // the crop pass expensive.
+        var res = (pass++ & 1) ? decodeFull() : decodeCrop();
         if (res) raw = res.data;
       }
     } catch (e) { /* transient decode failure — just try the next frame */ }
+
+    // detector.detect() suspends this function, so the camera may have been
+    // torn down while it was outstanding.
+    if (halted || myRun !== runId) return;
 
     if (raw) {
       var hit = MCV.exec(raw);
@@ -228,7 +549,7 @@
       if (isCddQR(raw)) { viewport.classList.add('hit'); return submit(raw); }
       say('That QR code is not an attendance link — keep scanning.', 'error');
     }
-    timer = setTimeout(tick, 120);
+    loop();
   }
 
   async function submit(url) {
@@ -274,6 +595,7 @@
     e.preventDefault();
     localStorage.removeItem('scan_token');
     secret = '';
+    whoEl.hidden = true;
     stop();
     say('Token cleared. Open the bot’s scanner link again to re-enable.', 'error');
   });
@@ -285,6 +607,7 @@
     start();
   });
 
+  showWho();
   start();
 })();
 </script>

@@ -17,7 +17,11 @@ from attendance_bot.config import (
     leaderboard_counts,
     SCAN_SECRET,
     SCAN_BASE_URL,
+    MAX_CUSTOM_DESC,
+    list_custom_assignments,
+    purge_custom_assignments_for_user,
 )
+from attendance_bot.scanner.tokens import mint_scan_token
 from attendance_bot.homework.dm import (
     run_homework_check_for_user,
     DEFAULT_HOMEWORK_HOUR,
@@ -25,11 +29,19 @@ from attendance_bot.homework.dm import (
     MIN_DEADLINE_REMINDER_HOURS,
     MAX_DEADLINE_REMINDER_HOURS,
 )
+from attendance_bot.homework.custom import (
+    DATE_HELP,
+    TIME_HELP,
+    AssignmentError,
+    create_assignment,
+    build_assignment_list_view,
+)
 from attendance_bot.settings_panel import build_settings_view
 from attendance_bot.release_notes import RELEASE_MESSAGES
 from attendance_bot.security.crypto import encrypt_password, decrypt_password
 from attendance_bot.mcv.attendance import (
     MCV_URL_PATTERN,
+    TZ_BANGKOK,
     WrongCredentialsError,
     LoginError,
     fetch_public_course_info,
@@ -180,6 +192,7 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
 
         del registered_users[uid]
         persist_users()
+        purge_custom_assignments_for_user(uid)
         log.info("User unregistered: %s", interaction.user.display_name)
         await interaction.response.send_message(
             "✅ Your credentials have been removed.", ephemeral=True
@@ -481,6 +494,96 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
             ephemeral=True,
         )
 
+    # -------------------------------------------------------------------
+    # User-added assignments
+    # -------------------------------------------------------------------
+    @tree.command(
+        name="homeworkadd",
+        description="Add an assignment of your own with a deadline — it joins your homework digest",
+    )
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+    @app_commands.describe(
+        course="Course code (e.g. 2110405) or any label you like, e.g. Thesis",
+        desc=f"What's due (max {MAX_CUSTOM_DESC} characters)",
+        due_date=f"Deadline date — {DATE_HELP}",
+        due_time=f"Deadline time — {TIME_HELP}",
+    )
+    async def cmd_homeworkadd(
+        interaction: discord.Interaction,
+        course: str,
+        desc: str,
+        due_date: str,
+        due_time: str | None = None,
+    ):
+        uid = str(interaction.user.id)
+        if uid not in registered_users:
+            await interaction.response.send_message(
+                "❌ You need to `/register` first.", ephemeral=True
+            )
+            return
+
+        # Validation, the course-name lookup and the write all live in
+        # homework/custom.py — the /settings "Add assignment" modal is the
+        # other entry point and has to behave identically.
+        await interaction.response.defer(ephemeral=True)
+        try:
+            rec = await create_assignment(
+                uid, course=course, desc=desc, due_date=due_date, due_time=due_time or "",
+            )
+        except AssignmentError as exc:
+            await interaction.followup.send(f"❌ {exc}", ephemeral=True)
+            return
+
+        course_code, course_name, desc_text = rec["course_code"], rec["course_name"], rec["desc"]
+        local = rec["due_dt"].astimezone(TZ_BANGKOK)
+        heading = f"`{course_code}`" + (f" — **{course_name}**" if course_name else "")
+        # Echo the parsed deadline in full: dates here are day-first
+        # (12/09 = 12 September), and this line is how someone catches it
+        # if they typed a month-first date out of habit.
+        note = ""
+        if not registered_users[uid].get("homework_check", False):
+            note = ("\n⚠️ Your daily homework digest is currently **off** — use `/homework on` to get it, "
+                    "or `/homeworkcheck` to see everything right now.")
+        await interaction.followup.send(
+            f"✅ Added to {heading}\n"
+            f"> **{desc_text}**\n"
+            f"> Due **{local.strftime('%A %d %B %Y, %H:%M')}** (Bangkok time)\n\n"
+            "It'll show up in your homework digest next to your MyCourseVille and ClassDeeDee work. "
+            f"`/homeworklist` to see or delete what you've added.{note}",
+            ephemeral=True,
+        )
+
+    @cmd_homeworkadd.autocomplete("course")
+    async def _homeworkadd_course_autocomplete(interaction: discord.Interaction, current: str):
+        """Suggest the courses this user already uses — their /enroll list
+        first, then labels they've typed into a previous /homeworkadd.
+        """
+        uid = str(interaction.user.id)
+        known = list(registered_users.get(uid, {}).get("subjects", []))
+        known += [rec.get("course_code", "") for _, rec in list_custom_assignments(uid)]
+
+        typed = current.strip().lower()
+        seen = [c for c in dict.fromkeys(known) if c and typed in c.lower()]
+        return [app_commands.Choice(name=c, value=c) for c in seen[:25]]
+
+    @tree.command(
+        name="homeworklist",
+        description="See and delete the assignments you've added yourself with /homeworkadd",
+    )
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+    async def cmd_homeworklist(interaction: discord.Interaction):
+        uid = str(interaction.user.id)
+        if uid not in registered_users:
+            await interaction.response.send_message(
+                "❌ You need to `/register` first.", ephemeral=True
+            )
+            return
+        await interaction.response.send_message(
+            view=build_assignment_list_view(uid), ephemeral=True
+        )
+
     @tree.command(
         name="settings",
         description="Open your settings panel — notifications and course enrollment, all in one place",
@@ -517,7 +620,7 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
                 "`/deedeeunregister` — Remove just that ClassDeeDee login, keep your MyCourseVille account\n"
                 "`/unregister` — Remove everything — MyCourseVille, ClassDeeDee, and all your settings\n"
                 "`/users` — List all registered users\n"
-                "`/settings` — One panel for notifications, attendance, ClassDeeDee, and account management\n"
+                "`/settings` — One panel for notifications, assignments, attendance, ClassDeeDee, and account management\n"
                 "\n"
                 "**Course Enrollment**\n"
                 "`/enroll <course_code>` — Only get checked in for this course's links (e.g. `2110405`)\n"
@@ -539,13 +642,16 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
                 "`/deedeecheck` — Test if your saved credentials can log into ClassDeeDee (ChulaSSO)\n"
                 "`/deedeebench` — (temp) Benchmark logging in all users to ClassDeeDee (timing & RAM)\n"
                 "`/status` — Show bot uptime, registered users, and monitored channels\n"
-                "`/leaderboard` — See who's posted the most attendance links\n"
+                "`/leaderboard` — See who's brought in the most check-ins (post a link or scan a QR)\n"
                 "\n"
                 "**Homework Check**\n"
                 "`/homework on` — Get a daily DM listing outstanding work (MyCourseVille + ClassDeeDee)\n"
                 "`/homework off` — Stop the daily DM\n"
                 "`/homeworktime <hour>` — Set what hour it arrives, 0-23 Bangkok time (default 8am)\n"
                 "`/homeworkcheck` — Run it once right now, without needing `/homework on` first\n"
+                "`/homeworkadd <course> <desc> <date> [time]` — Add an assignment of your own with your "
+                "own deadline (e.g. `2110405` · `Lab 4 writeup` · `fri` · `5pm`)\n"
+                "`/homeworklist` — See and delete the assignments you added yourself\n"
                 "`/deadlinereminder on` — Separate, off-by-default DM shortly before an unfinished item is due\n"
                 "`/deadlinereminder off` — Stop that DM\n"
                 "`/deadlinereminderhours <hours>` — How many hours before due, "
@@ -1119,7 +1225,10 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
         # run just gets the DM-only fallback (see handle_web_scan).
         in_guild_channel = interaction.guild is not None
         channel_id = interaction.channel_id if in_guild_channel else None
-        link = f"{SCAN_BASE_URL}/scan#t={SCAN_SECRET}&c={channel_id or ''}"
+        # The token is minted for *this* user, so a scan can be attributed and
+        # the page can show whose account it is running as.
+        token = mint_scan_token(interaction.user.id)
+        link = f"{SCAN_BASE_URL}/scan#t={token}&c={channel_id or ''}"
         where = f"posted in <#{channel_id}> (and DMed to each user)" if channel_id else "DMed to each user"
         await interaction.response.send_message(
             f"📷 **Attendance QR Scanner**\n"
@@ -1129,17 +1238,19 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
             "The code is decoded on your device — only the link reaches the bot, which then checks in "
             "everyone registered.\n"
             f"Results will be {where}.\n"
-            "⚠️ Anyone with this link can trigger a check-in, so don't share it outside the group.",
+            "⚠️ This link is **yours** - scans made with it are posted under your name. "
+            "Anyone you share it with can check everyone in as you, so keep it to yourself. "
+            "Run `/scanner` again any time for a fresh link.",
             ephemeral=True,
         )
 
-    @tree.command(name="leaderboard", description="See who's posted the most attendance links")
+    @tree.command(name="leaderboard", description="See who's brought in the most attendance check-ins")
     @app_commands.allowed_installs(guilds=True, users=True)
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def cmd_leaderboard(interaction: discord.Interaction):
         if not leaderboard_counts:
             await interaction.response.send_message(
-                "🏆 No one's posted an attendance link yet — be the first!", ephemeral=True
+                "🏆 No one's brought in a check-in yet — post a link or scan a QR to be the first!", ephemeral=True
             )
             return
 
@@ -1148,16 +1259,16 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
         lines = []
         for i, (uid, entry) in enumerate(ranked[:10]):
             rank = medals[i] if i < len(medals) else f"`#{i + 1}`"
-            lines.append(f"{rank} **{entry['display_name']}** — {entry['count']} link(s)")
+            lines.append(f"{rank} **{entry['display_name']}** — {entry['count']} check-in(s)")
 
         uid = str(interaction.user.id)
         if uid not in dict(ranked[:10]) and uid in leaderboard_counts:
             own_rank = next(i for i, (u, _) in enumerate(ranked) if u == uid) + 1
             own_entry = leaderboard_counts[uid]
-            lines.append(f"...\n`#{own_rank}` **{own_entry['display_name']}** (you) — {own_entry['count']} link(s)")
+            lines.append(f"...\n`#{own_rank}` **{own_entry['display_name']}** (you) — {own_entry['count']} check-in(s)")
 
         await interaction.response.send_message(
-            "🏆 **Attendance Link Leaderboard**\n" + "\n".join(lines)
+            "🏆 **Attendance Leaderboard**\n" + "\n".join(lines)
         )
 
     # Return helpers so bot.py can use them for on_message

@@ -31,4 +31,15 @@ WHATS_NEW_MESSAGE_3_3 = (
     "Also on the `/settings` panel now, in its own **Attendance** card."
 )
 
-RELEASE_MESSAGES = [WELCOME_MESSAGE, WHATS_NEW_MESSAGE, WHATS_NEW_MESSAGE_3_3]
+WHATS_NEW_MESSAGE_3_4 = (
+    "**What's new in v3.4 — Add your own assignments**\n"
+    "Homework Check isn't limited to what MyCourseVille and ClassDeeDee report any more. "
+    "`/homeworkadd <course> <desc> <date> [time]` adds anything with a deadline — a reading, a group "
+    "meeting, a paper the platforms never list.\n"
+    "Dates read the way you'd type them: `fri`, `tomorrow`, `12/09`, `2026-09-12`, with `5pm`/`17:30` "
+    "optional (blank = end of day). They appear in your digest and deadline reminders next to everything "
+    "else, grouped under the same course.\n"
+    "`/homeworklist` to review or delete them — they also clear themselves 5 days after they're due."
+)
+
+RELEASE_MESSAGES = [WELCOME_MESSAGE, WHATS_NEW_MESSAGE, WHATS_NEW_MESSAGE_3_3, WHATS_NEW_MESSAGE_3_4]

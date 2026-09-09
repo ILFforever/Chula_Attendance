@@ -37,6 +37,7 @@ from attendance_bot.classdeedee.login import (
     WrongCredentialsError as CddWrongCredentialsError,
     LoginError as CddLoginError,
 )
+from attendance_bot.homework.custom import custom_items_for_user
 
 _MCV_DUE_RE = re.compile(r"(\d+)\s*(day|hour|minute)", re.IGNORECASE)
 
@@ -110,7 +111,8 @@ def resolve_mcv_credentials(info: dict) -> tuple[str, str, str]:
 
 
 def check_homework_for_user(uid: str) -> dict:
-    """Homework check for one registered Discord user, across both platforms.
+    """Homework check for one registered Discord user, across both platforms
+    plus anything they added themselves with /homeworkadd.
 
     Returns {"groups": [...], "mcv_error": str|None, "cdd_error": str|None,
     "cdd_skipped": bool, "cdd_disabled": bool}. Each group: {"course_code",
@@ -203,6 +205,12 @@ def check_homework_for_user(uid: str) -> dict:
         except http_requests.RequestException as exc:
             cdd_error = f"network error ({exc})"
 
+    # ---------------- user-added assignments ----------------
+    # Appended unconditionally, outside both try blocks — an item the user
+    # typed in themselves has nothing to do with either platform being
+    # reachable, and is exactly what should still show up when a login breaks.
+    raw_items.extend(custom_items_for_user(uid))
+
     # ---------------- group by course, most-urgent course first ----------------
     groups_by_code: dict[str, dict] = {}
     for item in raw_items:
@@ -294,7 +302,7 @@ def _print_report(uid: str, result: dict) -> None:
         print(f"\n{dot} {group['course_code']} — {name}")
         for item in group["items"]:
             idot = urgency_dot(item["days"])
-            tag = "MCV" if item["platform"] == "mcv" else "CDD"
+            tag = {"mcv": "MCV", "classdeedee": "CDD"}.get(item["platform"], "OWN")
             print(f"   {idot} [{tag}] {item['title']} — {item['due_text']}")
             print(f"        {item['link']}")
 

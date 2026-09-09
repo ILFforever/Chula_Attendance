@@ -58,7 +58,7 @@ from attendance_bot.config import (
 from attendance_bot.mcv.attendance import TZ_BANGKOK
 from attendance_bot.homework.check import check_homework_for_user, filter_suppressed, cache_deadlines
 
-_PLATFORM_TAG = {"mcv": "MyCourseVille", "classdeedee": "ClassDeeDee"}
+_PLATFORM_TAG = {"mcv": "MyCourseVille", "classdeedee": "ClassDeeDee", "custom": "Added by you"}
 
 
 def _item_custom_id(uid: str, item: dict, course_code: str) -> str:
@@ -111,8 +111,13 @@ def _pretty_due_text(item: dict) -> str:
     """Human-friendly due text: relative phrasing ("in 3 days") inside a
     week, an absolute date beyond that. MCV's due text is already relative
     (e.g. "4 days") straight from its own "due soon" panel — left as-is.
+
+    Keyed off the text's shape rather than the platform: ClassDeeDee and
+    user-added items both carry an absolute ISO deadline, MCV's relative
+    wording never contains a "T", so this covers all three without a
+    per-platform branch.
     """
-    if item["platform"] != "classdeedee" or "T" not in (item["due_text"] or ""):
+    if "T" not in (item["due_text"] or ""):
         return item["due_text"]
 
     days = item.get("days")
@@ -139,9 +144,13 @@ def build_course_container(uid: str, group: dict) -> ui.Container:
     people actually reach for on a list; opening the assignment isn't worth
     doubling every row's height for).
     """
-    name = group["course_name"] or "course name unavailable"
+    # The name comes from whichever item in the group carried one, so a group
+    # made only of user-added items may have none — the bare course code on
+    # its own reads better there than "course name unavailable".
+    name = group["course_name"]
+    heading = f"## {group['course_code']} — {name}" if name else f"## {group['course_code']}"
     container = ui.Container(
-        ui.TextDisplay(_truncate(f"## {group['course_code']} — {name}", 256)),
+        ui.TextDisplay(_truncate(heading, 256)),
         accent_colour=_urgency_color(group["days"]),
     )
 
@@ -159,10 +168,14 @@ def build_course_container(uid: str, group: dict) -> ui.Container:
         if spacious:
             container.add_item(title_text)
             container.add_item(detail_text)
-            container.add_item(ui.ActionRow(
-                ui.Button(style=discord.ButtonStyle.link, label="Open in web", url=item["link"]),
-                finish_button,
-            ))
+            row = ui.ActionRow()
+            # User-added items have no page to open, and a link Button with
+            # url="" 400s the entire message — so the row is built up rather
+            # than declared, and carries just the finish button for those.
+            if item["link"]:
+                row.add_item(ui.Button(style=discord.ButtonStyle.link, label="Open in web", url=item["link"]))
+            row.add_item(finish_button)
+            container.add_item(row)
         else:
             container.add_item(ui.Section(title_text, detail_text, accessory=finish_button))
     return container

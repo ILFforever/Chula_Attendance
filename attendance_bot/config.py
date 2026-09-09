@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import secrets
 from datetime import datetime, timezone, timedelta
 
 from dotenv import load_dotenv
@@ -43,7 +44,7 @@ log.setLevel(logging.DEBUG)
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-BOT_VERSION = "3.3.0"
+BOT_VERSION = "3.4.0"
 
 DATA_DIR = os.environ.get("DATA_DIR", ".")
 CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
@@ -110,9 +111,15 @@ seen_links: dict[str, str] = _leaderboard_data.get("seen_links", {})
 #   reminder tick (per-user window, see registered_users["deadline_reminder_hours"])
 #   without a fresh MCV/ClassDeeDee login on every scan — see
 #   homework/dm.py's run_deadline_reminder_tick.
+# "custom": { "uid": { "item_id": {"desc", "course_code", "course_name", "due_dt", "created_at"} } }
+#   — assignments the user typed in themselves with /homeworkadd. Lives here
+#   rather than on the user's users.json record because it's homework state,
+#   not identity: users.json is the credentials store, rewritten wholesale on
+#   every settings toggle and encryption-migrated on startup.
 _homework_data = load_json(HOMEWORK_FILE)
 homework_suppressed: dict[str, str] = _homework_data.get("suppressed", {})
 homework_deadlines: dict[str, dict] = _homework_data.get("deadlines", {})
+homework_custom: dict[str, dict] = _homework_data.get("custom", {})
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +161,7 @@ def persist_homework():
     save_json(HOMEWORK_FILE, {
         "suppressed": homework_suppressed,
         "deadlines": homework_deadlines,
+        "custom": homework_custom,
     })
 
 
@@ -331,6 +339,109 @@ def pending_deadline_items() -> list[tuple[str, str, dict]]:
         uid = key.split(":", 1)[0]
         out.append((uid, key, entry))
     return out
+
+
+# ---------------------------------------------------------------------------
+# Custom ("added by you") assignment helpers
+# ---------------------------------------------------------------------------
+# Unlike a MyCourseVille/ClassDeeDee item — which simply stops being reported
+# by the platform once it's submitted or expires — a custom assignment lives
+# until something deletes it. It keeps showing while overdue (a signal the
+# platforms can't give), then goes away on its own 5 days past due.
+#
+# This TTL MUST stay well under HOMEWORK_SUPPRESS_TTL: if a custom item
+# outlived its own "marked finished" suppression entry it would rise from the
+# dead and start being reported again.
+CUSTOM_ASSIGNMENT_TTL = timedelta(days=5)
+
+# Discord's flat 40-components-per-message cap is what sets this, not storage:
+# /homeworklist renders one Section per assignment (Section + TextDisplay +
+# Delete button = 3 components), so 12 rows plus a header and footer line is
+# what fits in a single message without pagination.
+MAX_CUSTOM_ASSIGNMENTS = 12
+MAX_CUSTOM_DESC = 100
+MAX_CUSTOM_COURSE = 32
+
+
+def _purge_custom_derived_keys(uid: str, course_code: str, item_id: str):
+    """Drop the suppression + deadline-cache rows derived from one custom item.
+
+    Not optional housekeeping: the deadline reminder tick reads
+    homework_deadlines directly, never the custom store, so a deleted
+    assignment whose cache row survived would still fire a "due soon" DM.
+    The suppressed row is dropped for the same reason on a smaller scale —
+    it would otherwise sit in "View finished items" with a Restore button
+    that restores nothing.
+    """
+    key = homework_key(uid, "custom", course_code, item_id)
+    homework_suppressed.pop(key, None)
+    homework_deadlines.pop(key, None)
+
+
+def prune_custom_assignments():
+    cutoff = datetime.now(timezone.utc) - CUSTOM_ASSIGNMENT_TTL
+    pruned = False
+    for uid, items in list(homework_custom.items()):
+        for item_id, rec in list(items.items()):
+            due_dt = _parse_iso(rec.get("due_dt", ""))
+            if due_dt is not None and due_dt >= cutoff:
+                continue
+            del items[item_id]
+            _purge_custom_derived_keys(uid, rec.get("course_code", ""), item_id)
+            pruned = True
+        if not items:
+            del homework_custom[uid]
+    if pruned:
+        persist_homework()
+
+
+def list_custom_assignments(uid: str) -> list[tuple[str, dict]]:
+    """(item_id, record) pairs for one user, soonest deadline first."""
+    prune_custom_assignments()
+    return sorted(homework_custom.get(uid, {}).items(), key=lambda kv: kv[1].get("due_dt", ""))
+
+
+def add_custom_assignment(uid: str, *, desc: str, course_code: str, course_name: str, due_dt: datetime) -> str:
+    """Store one assignment and return its generated id.
+
+    The id doubles as the item_key in every derived key
+    (`uid:custom:course_code:item_id`), so it's short on purpose — that key
+    has to fit inside Discord's 100-char custom_id limit alongside the uid
+    and the (MAX_CUSTOM_COURSE-capped) course code.
+    """
+    item_id = secrets.token_hex(4)
+    homework_custom.setdefault(uid, {})[item_id] = {
+        "desc": desc,
+        "course_code": course_code,
+        "course_name": course_name,
+        "due_dt": due_dt.astimezone(timezone.utc).isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    persist_homework()
+    return item_id
+
+
+def remove_custom_assignment(uid: str, item_id: str) -> dict | None:
+    """Delete one assignment and everything derived from it. Returns the
+    deleted record, or None if it wasn't there.
+    """
+    rec = homework_custom.get(uid, {}).pop(item_id, None)
+    if rec is None:
+        return None
+    if not homework_custom.get(uid):
+        homework_custom.pop(uid, None)
+    _purge_custom_derived_keys(uid, rec.get("course_code", ""), item_id)
+    persist_homework()
+    return rec
+
+
+def purge_custom_assignments_for_user(uid: str):
+    """Drop everything a departing user typed in, on /unregister or a
+    settings "Delete account" — their own written content shouldn't outlive
+    the account by the 5 days the normal TTL would give it.
+    """
+    for item_id in list(homework_custom.get(uid, {})):
+        remove_custom_assignment(uid, item_id)
 
 
 def record_leaderboard_post(uid: str, display_name: str):

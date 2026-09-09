@@ -18,6 +18,7 @@ from attendance_bot.config import (
     is_duplicate_link,
     mark_link_seen,
     record_leaderboard_post,
+    leaderboard_counts,
 )
 from attendance_bot.mcv.attendance import (
     AttendanceLogger,
@@ -29,6 +30,7 @@ from attendance_bot.mcv.attendance import (
 from attendance_bot.scanner.webserver import start_web_server
 from attendance_bot.classdeedee.attendance import check_in_all as cdd_check_in_all
 from attendance_bot.homework.dm import handle_homework_button, run_homework_scheduler_tick, run_deadline_reminder_tick
+from attendance_bot.homework.custom import handle_custom_assignment_button
 from attendance_bot.settings_panel import handle_settings_interaction
 from attendance_bot import commands
 
@@ -44,7 +46,11 @@ class AttendanceBot(discord.Client):
         # The scanner server shares the bot's event loop, so a scan can reach
         # straight into the same check-in helpers the message handler uses.
         if SCAN_SECRET:
-            await start_web_server(handle_web_scan, on_scan_cdd=handle_web_scan_cdd)
+            await start_web_server(
+                handle_web_scan,
+                on_scan_cdd=handle_web_scan_cdd,
+                on_identify=identify_scanner,
+            )
         else:
             log.info("SCAN_SECRET not set — QR scanner web server disabled")
 
@@ -176,28 +182,89 @@ async def process_attendance_link(attendance_url: str, channel, note: str = "") 
     }
 
 
-async def handle_web_scan(attendance_url: str, channel_id: int | None = None) -> dict:
+async def award_scan_credit(scanner_id: str | None) -> None:
+    """Give the scanner leaderboard credit for a check-in they triggered.
+
+    Callers apply the same bar a posted link has to clear: first sighting of
+    this code, and it actually checked somebody in. A legacy shared-secret link
+    carries no identity, so there is nobody to credit.
+    """
+    if not scanner_id:
+        return
+
+    name = None
+    try:
+        user = bot.get_user(int(scanner_id)) or await bot.fetch_user(int(scanner_id))
+        name = user.display_name
+    except Exception as e:
+        # Never lose the credit over a failed name lookup — fall back to the
+        # name already on the board, and only then to something readable.
+        log.warning("Could not resolve scanner %s for leaderboard credit: %s", scanner_id, e)
+        existing = leaderboard_counts.get(scanner_id)
+        name = existing["display_name"] if existing else f"User {scanner_id}"
+
+    record_leaderboard_post(scanner_id, name)
+    log.info("Leaderboard credit to %s (%s) for a scanned check-in", name, scanner_id)
+
+
+async def identify_scanner(user_id: str) -> dict | None:
+    """Name and avatar for the scanner page's identity chip.
+
+    Called once when the page loads, so whoever is holding the phone can see
+    which Discord account their saved token belongs to — and notice immediately
+    if it is somebody else's.
+    """
+    try:
+        # get_user is a cache hit; fetch_user costs a REST round trip.
+        user = bot.get_user(int(user_id)) or await bot.fetch_user(int(user_id))
+    except Exception as e:
+        log.warning("Could not resolve scanner identity for %s: %s", user_id, e)
+        return None
+    return {
+        "id": str(user.id),
+        "name": user.display_name,
+        "avatar": user.display_avatar.replace(size=128).url,
+        "registered": str(user.id) in registered_users,
+    }
+
+
+async def handle_web_scan(attendance_url: str, channel_id: int | None = None,
+                          scanner_id: str | None = None) -> dict:
     """Entry point for a QR code scanned on the web page.
 
     `channel_id` is the channel the scanner link was bound to (from /scanner);
-    results post there, or DM-only if it's missing/unreachable.
+    results post there, or DM-only if it's missing/unreachable. `scanner_id` is
+    the Discord user whose token was used, or None for a legacy shared-secret
+    link — tokens minted before per-user tokens existed carry no identity.
     """
     channel = bot.get_channel(channel_id) if channel_id else None
 
-    log.info("Attendance URL received from QR scanner: %s (channel=%s)", attendance_url, channel_id)
-    # No leaderboard credit — a scan carries no Discord identity to award it to.
-    return await process_attendance_link(attendance_url, channel, note="📷 Scanned via QR scanner — ")
+    log.info("Attendance URL received from QR scanner: %s (channel=%s, scanner=%s)",
+             attendance_url, channel_id, scanner_id or "anonymous")
+    note = f"📷 Scanned by <@{scanner_id}> — " if scanner_id else "📷 Scanned via QR scanner — "
+    summary = await process_attendance_link(attendance_url, channel, note=note)
+
+    # Same rule as posting the link in a channel: credit only a first sighting
+    # that produced a real check-in. process_attendance_link has already marked
+    # the URL seen, so re-scanning the same QR comes back duplicate=True and a
+    # stale or expired code never counts.
+    if not summary["duplicate"] and summary["succeeded"]:
+        await award_scan_credit(scanner_id)
+    return summary
 
 
-async def handle_web_scan_cdd(sid: str, nonce: str, channel_id: int | None = None) -> dict:
+async def handle_web_scan_cdd(sid: str, nonce: str, channel_id: int | None = None,
+                              scanner_id: str | None = None) -> dict:
     """Entry point for a scanned ClassDeeDee attendance QR ({sid, nonce}).
 
     `channel_id` is the channel the scanner link was bound to (from /scanner);
-    results post there, or DM-only if it's missing/unreachable.
+    results post there, or DM-only if it's missing/unreachable. `scanner_id` is
+    the Discord user whose token was used, or None for a legacy link.
     """
     channel = bot.get_channel(channel_id) if channel_id else None
 
-    log.info("ClassDeeDee attendance QR received from scanner: sid=%s (channel=%s)", sid, channel_id)
+    log.info("ClassDeeDee attendance QR received from scanner: sid=%s (channel=%s, scanner=%s)",
+             sid, channel_id, scanner_id or "anonymous")
     started = time.perf_counter()
 
     # Kick the logins/check-in off IMMEDIATELY — the nonce is time-sensitive, so
@@ -206,11 +273,21 @@ async def handle_web_scan_cdd(sid: str, nonce: str, channel_id: int | None = Non
     # bounded pool.
     checkin_task = bot.loop.run_in_executor(executor, cdd_check_in_all, sid, nonce)
 
+    # Leaderboard dedup key. A ClassDeeDee QR has no URL to remember, and its
+    # nonce rotates every few seconds — only the session id is stable, so that
+    # is what identifies "this class, already scanned". Namespaced so it can
+    # never collide with a real MCV URL in the same seen_links store.
+    dedupe_key = f"classdeedee:{sid}"
+    is_dupe = is_duplicate_link(dedupe_key)
+    if is_dupe:
+        log.info("ClassDeeDee session %s already scanned recently - no leaderboard credit", sid)
+
     status_msg = None
     if channel is not None:
         try:
+            by = f" by <@{scanner_id}>" if scanner_id else ""
             status_msg = await channel.send(
-                "📷 Scanned a **ClassDeeDee** attendance QR — checking everyone in …"
+                f"📷 Scanned{by} a **ClassDeeDee** attendance QR — checking everyone in …"
             )
         except Exception as e:  # a failed status post must never abort the check-in
             log.warning("Could not post ClassDeeDee scan status: %s", e)
@@ -230,6 +307,11 @@ async def handle_web_scan_cdd(sid: str, nonce: str, channel_id: int | None = Non
     _spawn(dm_results(results, "ClassDeeDee attendance"))
 
     succeeded = sum(1 for _, r in results if "✅" in r)
+
+    mark_link_seen(dedupe_key)
+    if not is_dupe and succeeded:
+        await award_scan_credit(scanner_id)
+
     where = "Results posted in Discord." if channel is not None else "Results sent to each user via DM."
     return {
         "message": f"✅ ClassDeeDee\n{succeeded} of {len(results)} user(s) checked in. {where}",
@@ -274,6 +356,7 @@ async def on_interaction(interaction: discord.Interaction):
     # View callback — see homework/dm.py's module docstring for why a click
     # needs to keep working even after a restart.
     await handle_homework_button(interaction)
+    await handle_custom_assignment_button(interaction)
     await handle_settings_interaction(interaction)
 
 

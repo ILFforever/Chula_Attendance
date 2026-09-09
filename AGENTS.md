@@ -31,6 +31,7 @@ A user's login method (CU Net vs. MyCourseVille account) determines which platfo
 - `users.json` — `{ discord_user_id: { username, password (encrypted), display_name, subjects: [...] } }`. Passwords are encrypted via `attendance_bot/security/crypto.py`; plaintext entries are auto-migrated to encrypted on startup.
 - `config.json` — `monitored_channels`.
 - `leaderboard.json` — `counts` (post leaderboard) and `seen_links` (dedup cache, pruned by `SEEN_LINK_TTL` = 48h since attendance codes can't stay valid longer than a day).
+- `homework.json` — `suppressed` (items a user marked finished), `deadlines` (cached due times driving the deadline reminder without a fresh login), and `custom` (assignments added with `/homeworkadd`). All three are keyed `uid:platform:course_code:item_key`, so deleting a custom assignment has to purge the other two stores' rows for it (`config.remove_custom_assignment`) — a stale `deadlines` row would still fire a reminder for something that no longer exists.
 
 **Course enrollment / filtering (`subjects` on a user):** MCV attendance links carry MCV's internal course ID, which is unrelated to the public course code students know — so matching against a user's `/enroll`ed course codes is done by scraping the link's OpenGraph metadata for the public code rather than trusting the internal ID. An empty `subjects` list means "checked in for everything"; this is the existing pattern for making a feature opt-in/scoped per user and per course.
 
