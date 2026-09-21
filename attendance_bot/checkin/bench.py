@@ -19,6 +19,23 @@ from attendance_bot.checkin.runner import (
 )
 
 
+def reset_peak_rss() -> bool:
+    """Reset the kernel's peak-RSS counter (VmHWM) to the current RSS.
+
+    VmHWM is otherwise a lifetime high-water mark, so a bench would report the
+    largest spike the process ever had rather than its own — and running both
+    platforms back to back would credit the first one's peak to the second.
+    Writing 5 to clear_refs resets only that counter; it does not touch page
+    tables or memory, unlike the soft-dirty modes (1-4). Linux-only.
+    """
+    try:
+        with open("/proc/self/clear_refs", "w", encoding="ascii") as f:
+            f.write("5")
+        return True
+    except OSError:
+        return False
+
+
 def read_rss_mb() -> tuple[float | None, float | None]:
     """Return (current_rss_mb, peak_rss_mb). Dependency-free on Linux/Fly.
 
@@ -26,9 +43,8 @@ def read_rss_mb() -> tuple[float | None, float | None]:
     so we get the high-water mark without a sampler thread). Falls back to
     psutil, then to (None, None) on platforms without either (e.g. Windows).
 
-    NOTE: VmHWM is a lifetime high-water mark for the process, so a peak set
-    earlier (startup, an older check-in) still shows here. Treat it as an upper
-    bound on this run's cost, not a measurement of it.
+    Paired with reset_peak_rss() at the start of a run, the peak reported is
+    that run's own rather than the process's lifetime maximum.
     """
     try:
         cur = peak = None
@@ -86,6 +102,8 @@ def run_login_bench(
     workers = min(CHECKIN_CONCURRENCY, len(targets)) if targets else 1
     waves = -(-len(targets) // workers) if targets else 0  # ceil division
 
+    # Measure this run's own peak, not whatever the process hit earlier.
+    reset_peak_rss()
     rss_before, _ = read_rss_mb()
     started = time.perf_counter()
 

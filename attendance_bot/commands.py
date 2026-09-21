@@ -1144,6 +1144,14 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
                 f"💥 **{display_name}** — error: {error}", ephemeral=True
             )
 
+    def _peak_growth(stats: dict) -> float | None:
+        """How much RSS this bench added at its peak, or None if unmeasurable."""
+        if stats.get("rss_peak") is None or stats.get("rss_before") is None:
+            return None
+        if not min(stats.get("workers", 0), stats.get("attempted", 0)):
+            return None
+        return max(0.0, stats["rss_peak"] - stats["rss_before"])
+
     def _render_bench(stats: dict, title: str, skip_label: str) -> str:
         def mb(v):
             return f"{v:.1f} MB" if isinstance(v, (int, float)) else "n/a"
@@ -1166,12 +1174,13 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
         else:
             lines.append("• RAM: not measurable on this platform (works on Fly/Linux)")
 
-        # Peak RSS is a lifetime high-water mark, so this is an upper bound on
-        # what a login actually costs, not an exact figure.
-        concurrent = min(stats["workers"], stats["attempted"])
-        if concurrent and stats["rss_peak"] is not None and stats["rss_before"] is not None:
-            lines.append(f"• ≤{(stats['rss_peak'] - stats['rss_before']) / concurrent:.2f} MB "
-                         f"per concurrent login ({concurrent} at once)")
+        # The peak-RSS counter is reset before each run, so this is this run's
+        # own peak rather than the process's lifetime maximum.
+        grew = _peak_growth(stats)
+        if grew is not None:
+            concurrent = min(stats["workers"], stats["attempted"])
+            lines.append(f"• {grew / concurrent:.2f} MB per concurrent login "
+                         f"({concurrent} at once, +{grew:.1f} MB peak)")
 
         if stats["platform"] == "classdeedee" and stats["wall"] > 8:
             lines.append(f"⚠️ Wall {stats['wall']:.1f}s > ~8s nonce window — a real check-in would drop late users.")
@@ -1244,10 +1253,16 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
             if stats.get("error") or not stats.get("attempted"):
                 lines.append(f"• {title} — —")
                 continue
-            lines.append(
-                f"• {title} — **{stats['wall'] * 1000:.0f} ms** "
-                f"(min {stats['fastest'] * 1000:.0f} · max {stats['slowest'] * 1000:.0f})"
-            )
+
+            line = (f"• {title} — **{stats['wall'] * 1000:.0f} ms** "
+                    f"(min {stats['fastest'] * 1000:.0f} · max {stats['slowest'] * 1000:.0f})")
+            # Each bench resets the peak-RSS counter first, so this is that
+            # platform's own peak even though the two run back to back.
+            grew = _peak_growth(stats)
+            if grew is not None:
+                concurrent = min(stats["workers"], stats["attempted"])
+                line += f" · +{grew:.1f} MB ({grew / concurrent:.2f} MB/login, {concurrent} at once)"
+            lines.append(line)
 
         await interaction.followup.send("\n".join(lines), ephemeral=True)
 
