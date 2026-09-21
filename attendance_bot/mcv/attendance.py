@@ -391,6 +391,7 @@ class AttendanceLogger:
             lambda t: self.check_in(
                 attendance_url, t.username, t.password, t.display_name, login_method=t.login_method
             ),
+            platform="mcv",
             label="mcv_checkin",
         )
 

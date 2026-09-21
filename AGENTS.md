@@ -27,7 +27,9 @@ Discord bot (`discord.py`) that auto-checks-in registered users for two unrelate
 
 **Shared check-in plumbing (`attendance_bot/checkin/`)** is to attendance what `attendance_bot/homework/` is to the homework check: each platform keeps its own login/check-in logic, while target collection (`collect_targets` — opt-out, enrollment filter, credential resolution) and the bounded fan-out (`run_batch`) live in one place so the two paths can't drift. Both platforms check in concurrently.
 
-The concurrency cap (`CHECKIN_CONCURRENCY`, default 16) is a process-wide semaphore, not a per-scan pool size: an MCV link and a ClassDeeDee QR can be processed at the same time, and a per-scan bound would let two overlapping scans open twice the sessions the 256 MB Fly instance has room for. `CDD_CHECKIN_CONCURRENCY` is still honoured as a fallback name.
+The concurrency cap (`CHECKIN_CONCURRENCY`, default 16) is a process-wide semaphore **per platform**, not a per-scan pool size and not shared between platforms. Per-scan would let two overlapping scans of one platform open twice the sessions there is room for; shared across platforms let MyCourseVille starve ClassDeeDee, which is the only path with a deadline — measured on the live instance, an MCV run holds its slots ~4.5s against ClassDeeDee's ~8s nonce. Separate pools cost ~29 MB with both saturated (measured per concurrent login via `/deedeebench` and `/mcvbench`: ClassDeeDee ~1.5 MB, MyCourseVille ~0.3 MB), well inside the 256 MB instance. `CDD_CHECKIN_CONCURRENCY` is still honoured as a fallback name.
+
+Adding a third platform means adding its key to `_login_slots` in `checkin/runner.py`; `run_batch` takes the platform name and looks its pool up there.
 
 Scans are deduplicated per code rather than serialized globally — `webserver._inflight` rejects a second scan of the *same* code with a 429 while the first is live, but two different codes proceed concurrently. Anything that checks "have I seen this code?" and then records it must use `config.claim_link()`, which does both in one step; doing it in two lets two concurrent scans of one code both claim leaderboard credit.
 

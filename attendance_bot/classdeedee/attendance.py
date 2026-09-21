@@ -218,6 +218,7 @@ def check_in_all(sid: str, nonce: str) -> list[tuple[str, str]]:
     return collected.skipped + run_batch(
         collected.targets,
         lambda t: check_in_one(t.username, t.password, sid, nonce, display_name=t.display_name),
+        platform="classdeedee",
         label="cdd_checkin",
         deadline_seconds=NONCE_WINDOW_SECONDS,
     )
