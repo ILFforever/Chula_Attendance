@@ -6,6 +6,7 @@ import requests as http_requests
 from bs4 import BeautifulSoup
 
 from attendance_bot.config import log, registered_users
+from attendance_bot.checkin import collect_targets, run_batch
 from attendance_bot.security.crypto import decrypt_password
 
 # ---------------------------------------------------------------------------
@@ -358,40 +359,37 @@ class AttendanceLogger:
         list are only checked in when that list contains *course_id*. Users with
         no subjects set are checked in regardless (backwards-compatible default).
 
+        Logins run concurrently under the shared check-in bound — see
+        attendance_bot/checkin/runner.py. MCV links stay valid far longer than
+        a ClassDeeDee nonce, so this isn't a deadline like ClassDeeDee's; it is
+        what stops one class-sized run from monopolising the scanner and the
+        slash commands queued behind it.
+
         Returns a list of (discord_user_id, result_message) tuples.
         """
         if not registered_users:
             return [("", "No users registered. Use `/register` to add users.")]
 
-        results = []
-        matched_any = False
-        for uid, info in registered_users.items():
-            if not info.get("checkin_enabled", True):
-                continue  # opted out with /autocheckin off — Homework Check is unaffected
-            subjects = info.get("subjects") or []
-            if subjects and course_id and course_id not in subjects:
-                continue
-            matched_any = True
+        def _resolve(info: dict) -> tuple[str, str, str]:
+            return (
+                info["username"],
+                decrypt_password(info["password"]),
+                info.get("login_method", "cu_net"),
+            )
 
-            display_name = info.get("display_name", info["username"])
-            encrypted_password = info["password"]
+        collected = collect_targets(_resolve, course_code=course_id, filter_subjects=True)
 
-            try:
-                password = decrypt_password(encrypted_password)
-            except ValueError as e:
-                log.error("Failed to decrypt password for %s: %s", info["username"], e)
-                results.append((uid, f"❌ **{display_name}** — failed to decrypt password (may need to re-register)"))
-                continue
-
-            login_method = info.get("login_method", "cu_net")
-            result = self.check_in(attendance_url, info["username"], password, display_name, login_method=login_method)
-            results.append((uid, result))
-
-        if not matched_any:
+        if not collected.matched_any:
             course_label = f"`{course_id}`" if course_id else "this course"
             return [("", f"No registered users are enrolled in {course_label}. Use `/enroll {course_id or '<course_id>'}` to opt in.")]
 
-        return results
+        return collected.skipped + run_batch(
+            collected.targets,
+            lambda t: self.check_in(
+                attendance_url, t.username, t.password, t.display_name, login_method=t.login_method
+            ),
+            label="mcv_checkin",
+        )
 
     def cleanup(self):
         """No persistent resources to clean up with requests."""

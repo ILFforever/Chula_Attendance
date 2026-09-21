@@ -13,12 +13,11 @@ This module mirrors attendance.py (MCV) but for ClassDeeDee:
 
 The nonce rotates roughly every 8 seconds. Each login is ~4 SSO round-trips
 (~1 s), so a whole class must log in concurrently to land inside that window.
-check_in_all() fans the per-user work out across a bounded thread pool: the
-cap keeps wall-clock ~= one login (not N logins) while limiting how many
-sessions/connections exist at once, which matters on a small Fly instance.
-Tune with the CDD_CHECKIN_CONCURRENCY env var (default 8).
+check_in_all() fans the per-user work out across the shared bounded pool in
+attendance_bot/checkin/: the cap keeps wall-clock ~= one login (not N logins)
+while limiting how many sessions/connections exist at once, which matters on a
+small Fly instance. Tune with the CHECKIN_CONCURRENCY env var (default 16).
 """
-import os
 import json
 import time
 from datetime import datetime
@@ -27,6 +26,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests as http_requests
 
 from attendance_bot.config import log, registered_users
+# How many users log in at once is bounded in attendance_bot/checkin/ and shared
+# with MyCourseVille, so two overlapping scans can't each open a full class's
+# worth of sessions. CHECKIN_CONCURRENCY is used by bench_logins below.
+from attendance_bot.checkin import CHECKIN_CONCURRENCY, collect_targets, run_batch
 from attendance_bot.security.crypto import decrypt_password
 from attendance_bot.mcv.attendance import TZ_BANGKOK
 from attendance_bot.classdeedee.login import (
@@ -38,12 +41,6 @@ from attendance_bot.classdeedee.login import (
 )
 
 CDD_CHECKIN = f"{CDD}/api/attendants/checkin"
-
-# How many users to log in at once. Bounded so a class-sized burst doesn't
-# open dozens of TLS sessions simultaneously and blow the Fly RAM budget.
-# Measured cost is tiny (~1.5 MB per concurrent login), so 16 fits a typical
-# class in a single wave while staying well within the Fly memory budget.
-CHECKIN_CONCURRENCY = max(1, int(os.environ.get("CDD_CHECKIN_CONCURRENCY", "16")))
 
 # The instructor's QR nonce lives ~8 s; used only to warn when a run overruns.
 NONCE_WINDOW_SECONDS = 8
@@ -275,54 +272,37 @@ def bench_logins() -> dict:
 def check_in_all(sid: str, nonce: str) -> list[tuple[str, str]]:
     """Check in every registered user for one scanned attendance QR.
 
-    Logins run concurrently across a bounded thread pool (CHECKIN_CONCURRENCY)
-    so the whole class lands inside the ~8 s nonce window while capping how many
-    sessions exist at once. Returns (discord_user_id, result_message) tuples.
+    Logins run concurrently under the shared check-in bound so the whole class
+    lands inside the ~8 s nonce window while capping how many sessions exist at
+    once. Returns (discord_user_id, result_message) tuples.
+
+    NOTE: unlike the MyCourseVille path this does no /enroll subject filtering —
+    every opted-in user with a ClassDeeDee login is checked into whatever QR was
+    scanned. A ClassDeeDee QR carries only {sid, nonce}, with no course code to
+    match a user's subjects against, and resolving one would cost an extra
+    round trip inside a window that is already tight. Deliberate, not an
+    oversight.
     """
     if not registered_users:
         return [("", "No users registered. Use `/register` to add users.")]
 
-    results: list[tuple[str, str]] = []
-    targets: list[tuple[str, str, str, str]] = []  # (uid, username, password, display_name)
-
-    # Resolve credentials up front (cheap, sequential) so the parallel section
-    # is pure I/O. Users with no ClassDeeDee login (MCV-only, no /deedeeregister)
-    # are skipped silently so scan results stay clean.
-    for uid, info in registered_users.items():
-        if not info.get("checkin_enabled", True):
-            continue  # opted out with /autocheckin off — Homework Check is unaffected
-        display_name = info.get("display_name", info.get("username", uid))
-        try:
-            creds = resolve_cdd_credentials(info, "checkin")
-        except ValueError:
-            log.error("Failed to decrypt ClassDeeDee credentials for %s", display_name)
-            results.append((uid, f"❌ **{display_name}** — failed to decrypt password (re-register)"))
-            continue
+    # Users with no ClassDeeDee login (MCV-only, no /deedeeregister) resolve to
+    # None and are skipped silently so scan results stay clean.
+    def _resolve(info: dict) -> tuple[str, str, str] | None:
+        creds = resolve_cdd_credentials(info, "checkin")
         if creds is None:
-            continue
+            return None
         username, password = creds
-        targets.append((uid, username, password, display_name))
+        return username, password, "chulasso"
 
-    if not targets:
-        return results
+    collected = collect_targets(_resolve)
+    if not collected.targets:
+        return collected.skipped
 
-    workers = min(CHECKIN_CONCURRENCY, len(targets))
-    log.info("ClassDeeDee check-in: %d user(s) across %d worker(s), sid=%s", len(targets), workers, sid)
-    started = time.perf_counter()
-
-    def _one(target: tuple[str, str, str, str]) -> tuple[str, str]:
-        uid, username, password, display_name = target
-        return uid, check_in_one(username, password, sid, nonce, display_name=display_name)
-
-    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="cdd_checkin") as pool:
-        for future in as_completed([pool.submit(_one, t) for t in targets]):
-            results.append(future.result())
-
-    elapsed = time.perf_counter() - started
-    ok = sum(1 for _, m in results if "✅" in m)
-    log.info("ClassDeeDee check-in done: %d/%d ok in %.2fs (nonce window ~%ds)",
-             ok, len(results), elapsed, NONCE_WINDOW_SECONDS)
-    if elapsed > NONCE_WINDOW_SECONDS:
-        log.warning("Check-in took %.2fs — past the ~%ds nonce window; late users may have been rejected",
-                    elapsed, NONCE_WINDOW_SECONDS)
-    return results
+    log.info("ClassDeeDee check-in for sid=%s", sid)
+    return collected.skipped + run_batch(
+        collected.targets,
+        lambda t: check_in_one(t.username, t.password, sid, nonce, display_name=t.display_name),
+        label="cdd_checkin",
+        deadline_seconds=NONCE_WINDOW_SECONDS,
+    )

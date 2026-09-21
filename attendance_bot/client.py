@@ -15,11 +15,11 @@ from attendance_bot.config import (
     HOMEWORK_CONCURRENCY,
     monitored_channels,
     registered_users,
-    is_duplicate_link,
-    mark_link_seen,
+    claim_link,
     record_leaderboard_post,
     leaderboard_counts,
 )
+from attendance_bot.checkin import succeeded
 from attendance_bot.mcv.attendance import (
     AttendanceLogger,
     MCV_URL_PARTIAL,
@@ -62,7 +62,16 @@ bot = AttendanceBot(intents=intents)
 tree = app_commands.CommandTree(bot)
 attendance = AttendanceLogger()
 bot_start_time = datetime.now(timezone.utc)
-executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="checkin_")
+# Dispatch pool, not the login pool. Everything blocking that a command or a
+# scan kicks off goes through here — course lookups, /register login checks,
+# and the outer call to each platform's check_in_all, which fans its own logins
+# out under the shared bound in attendance_bot/checkin/.
+#
+# This was max_workers=1, which meant one class-sized check-in blocked every
+# other scan *and* every slash command behind it (a user running /register
+# mid-class waited for the whole run). Concurrent scans need more than one
+# worker here to actually overlap; the real resource cap stays in checkin/.
+executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="checkin_")
 
 # Separate, low-concurrency pool for the homework check — unlike ClassDeeDee
 # check-in there's no nonce window forcing everyone in at once, so this stays
@@ -132,7 +141,9 @@ async def process_attendance_link(attendance_url: str, channel, note: str = "") 
     Returns a summary suitable for handing back to the scanner page.
     """
     started = time.perf_counter()
-    is_dupe = is_duplicate_link(attendance_url)
+    # Claimed up front, in one step, so two overlapping scans of the same link
+    # can't both count as the first sighting (see config.claim_link).
+    is_dupe = not claim_link(attendance_url)
     if is_dupe:
         log.info("Duplicate attendance link, re-checking in without leaderboard credit: %s", attendance_url)
 
@@ -166,18 +177,16 @@ async def process_attendance_link(attendance_url: str, channel, note: str = "") 
     # hang for ~20s — its HTTP response was blocked behind the whole DM run.
     _spawn(dm_results(results, course_info["title"] if course_info else None))
 
-    mark_link_seen(attendance_url)
-
-    succeeded = sum(1 for _, r in results if "✅" in r)
-    log.info("Attendance link fully handled in %.1fs (%d/%d ok)", time.perf_counter() - started, succeeded, len(results))
+    ok_count = succeeded(results)
+    log.info("Attendance link fully handled in %.1fs (%d/%d ok)", time.perf_counter() - started, ok_count, len(results))
     return {
         "course": course_info["title"] if course_info else None,
         "attempted": len(results),
-        "succeeded": succeeded,
+        "succeeded": ok_count,
         "duplicate": is_dupe,
         "message": (
             f"✅ {course_info['title'] if course_info else 'Attendance'}\n"
-            f"{succeeded} of {len(results)} user(s) checked in. Results posted in Discord."
+            f"{ok_count} of {len(results)} user(s) checked in. Results posted in Discord."
         ),
     }
 
@@ -268,9 +277,9 @@ async def handle_web_scan_cdd(sid: str, nonce: str, channel_id: int | None = Non
     started = time.perf_counter()
 
     # Kick the logins/check-in off IMMEDIATELY — the nonce is time-sensitive, so
-    # nothing (Discord post included) should sit in front of it. run_in_executor
-    # submits to the pool right away; check_in_all fans logins out across its own
-    # bounded pool.
+    # nothing (the Discord post, or claim_link's write below) should sit in front
+    # of it. run_in_executor submits to the dispatch pool right away; check_in_all
+    # then fans the logins out under the shared bound in attendance_bot/checkin/.
     checkin_task = bot.loop.run_in_executor(executor, cdd_check_in_all, sid, nonce)
 
     # Leaderboard dedup key. A ClassDeeDee QR has no URL to remember, and its
@@ -278,7 +287,7 @@ async def handle_web_scan_cdd(sid: str, nonce: str, channel_id: int | None = Non
     # is what identifies "this class, already scanned". Namespaced so it can
     # never collide with a real MCV URL in the same seen_links store.
     dedupe_key = f"classdeedee:{sid}"
-    is_dupe = is_duplicate_link(dedupe_key)
+    is_dupe = not claim_link(dedupe_key)
     if is_dupe:
         log.info("ClassDeeDee session %s already scanned recently - no leaderboard credit", sid)
 
@@ -306,15 +315,13 @@ async def handle_web_scan_cdd(sid: str, nonce: str, channel_id: int | None = Non
             log.warning("Could not post ClassDeeDee results: %s", e)
     _spawn(dm_results(results, "ClassDeeDee attendance"))
 
-    succeeded = sum(1 for _, r in results if "✅" in r)
-
-    mark_link_seen(dedupe_key)
-    if not is_dupe and succeeded:
+    ok_count = succeeded(results)
+    if not is_dupe and ok_count:
         await award_scan_credit(scanner_id)
 
     where = "Results posted in Discord." if channel is not None else "Results sent to each user via DM."
     return {
-        "message": f"✅ ClassDeeDee\n{succeeded} of {len(results)} user(s) checked in. {where}",
+        "message": f"✅ ClassDeeDee\n{ok_count} of {len(results)} user(s) checked in. {where}",
     }
 
 
