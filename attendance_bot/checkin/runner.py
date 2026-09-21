@@ -47,8 +47,13 @@ class CheckInTarget:
 class TargetSet:
     targets: list[CheckInTarget] = field(default_factory=list)
     # (uid, message) rows for users who can't be attempted but must still be
-    # reported — e.g. credentials that wouldn't decrypt.
+    # reported — e.g. credentials that wouldn't decrypt. A real problem.
     skipped: list[tuple[str, str]] = field(default_factory=list)
+    # Display names of users with no usable login for this platform (an
+    # MCV-only account and no /deedeeregister, say). Not a failure and not
+    # reported during a check-in — kept only so /deedeebench can explain why
+    # it attempted fewer users than are registered.
+    unavailable: list[str] = field(default_factory=list)
     # Whether any user passed the enrollment filter at all. Distinguishes
     # "nobody is enrolled in this course" from "nobody has a usable login".
     matched_any: bool = False
@@ -94,7 +99,8 @@ def collect_targets(
             )
             continue
         if creds is None:
-            continue  # no usable login for this platform — skipped silently
+            out.unavailable.append(display_name)  # skipped silently during a check-in
+            continue
 
         username, password, login_method = creds
         out.targets.append(CheckInTarget(uid, display_name, username, password, login_method))
