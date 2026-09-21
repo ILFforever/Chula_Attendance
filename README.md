@@ -59,7 +59,7 @@ Use `/deedeecheck` any time to confirm your ClassDeeDee login works (it echoes b
 
 A MyCourseVille-account user who wants to drop just the ClassDeeDee login (keeping MyCourseVille) can use `/deedeeunregister` instead of `/unregister` — it clears the `chulasso` credential added via `/deedeeregister` without touching anything else. CU Net users have nothing separate to unlink this way, since their ClassDeeDee login *is* their main login.
 
-**Timing note:** because the nonce lives only ~8 seconds, all logins for a scan run concurrently across a bounded thread pool (`CDD_CHECKIN_CONCURRENCY`, default 16) so the whole class lands inside the window while keeping RAM modest.
+**Timing note:** because the nonce lives only ~8 seconds, all logins for a scan run concurrently (`CHECKIN_CONCURRENCY`, default 16) so the whole class lands inside the window while keeping RAM modest. The cap is shared across every scan in flight, so an MCV link and a ClassDeeDee QR can be checked in at the same time without doubling memory use.
 
 ### Login Methods
 
@@ -189,7 +189,7 @@ One consolidated panel instead of memorizing commands — covers everything abov
 | `SCAN_SECRET` | No | Shared secret that gates the `/scanner` QR web page; unset disables the scanner |
 | `SCAN_BASE_URL` | No | Public base URL of the scanner page (used to build the `/scanner` link) |
 | `WEB_PORT` | No | Port the scanner web server listens on (default: `8080`) |
-| `CDD_CHECKIN_CONCURRENCY` | No | Max concurrent ClassDeeDee logins per attendance scan (default: `16`) |
+| `CHECKIN_CONCURRENCY` | No | Max concurrent platform logins at any moment, shared across all in-flight scans (default: `16`). Falls back to the older `CDD_CHECKIN_CONCURRENCY` if that is set instead. |
 | `HOMEWORK_CONCURRENCY` | No | Max concurrent users processed per homework-check tick (default: `4`) |
 
 ### Run Locally
@@ -217,7 +217,8 @@ The bot uses lightweight HTTP requests (`requests` + `BeautifulSoup`) instead of
 
 **Attendance check-in:**
 - **MyCourseVille** check-in logs in via MCV's OAuth/SSO form ([attendance_bot/mcv/attendance.py](attendance_bot/mcv/attendance.py)).
-- **ClassDeeDee** check-in logs in via ChulaSSO's CAS ticket flow ([attendance_bot/classdeedee/login.py](attendance_bot/classdeedee/login.py)) and posts attendance ([attendance_bot/classdeedee/attendance.py](attendance_bot/classdeedee/attendance.py)); logins run concurrently but bounded by `CDD_CHECKIN_CONCURRENCY` to stay inside the ~8 s QR nonce window without spiking memory.
+- **ClassDeeDee** check-in logs in via ChulaSSO's CAS ticket flow ([attendance_bot/classdeedee/login.py](attendance_bot/classdeedee/login.py)) and posts attendance ([attendance_bot/classdeedee/attendance.py](attendance_bot/classdeedee/attendance.py)); logins run concurrently but bounded by `CHECKIN_CONCURRENCY` to stay inside the ~8 s QR nonce window without spiking memory.
+- Both platforms share the check-in plumbing in [attendance_bot/checkin/](attendance_bot/checkin/) — who to check in, and the bounded parallel fan-out. Two different codes can be scanned at once; a second scan of the *same* code while the first is still running is rejected.
 - The shared phone QR scanner ([attendance_bot/scanner/webserver.py](attendance_bot/scanner/webserver.py) + [web/scan.html](web/scan.html)) decodes on-device and routes MCV links and ClassDeeDee QRs to the right handler.
 
 **Homework Check** ([attendance_bot/homework/](attendance_bot/homework/)):

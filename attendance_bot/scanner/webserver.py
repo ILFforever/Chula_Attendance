@@ -9,7 +9,6 @@ URL *fragment* (``/scan#t=<token>``), so it is never sent to the server as part
 of a request line and never lands in Fly's access logs.
 """
 
-import asyncio
 import os
 
 from aiohttp import web
@@ -23,10 +22,19 @@ from attendance_bot.scanner.tokens import verify_scan_token
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 WEB_DIR = os.path.join(REPO_ROOT, "web")
 
-# Only one scan is processed at a time — check_in_all runs on a single-worker
-# executor anyway, and this keeps an impatient double-tap from queueing up
-# duplicate logins behind each other.
-_scan_lock = asyncio.Lock()
+# Codes currently being processed, keyed the same way the leaderboard dedups
+# them (an MCV URL, or "classdeedee:<sid>").
+#
+# This replaces a single global lock. That lock made every scan wait for every
+# other one, which was harmless while check_in_all ran on a single-worker
+# executor — but it meant a slow MyCourseVille run could 429 an incoming
+# ClassDeeDee scan, and ClassDeeDee is the one path that genuinely cannot wait,
+# since its nonce dies in ~8 s. Tracking per code keeps the original purpose
+# (an impatient double-tap of the *same* QR doesn't queue duplicate logins)
+# while letting two different codes proceed at once. Total load stays bounded
+# by the shared semaphore in attendance_bot/checkin/runner.py rather than by
+# serializing whole scans.
+_inflight: set[str] = set()
 
 
 async def _index(request: web.Request) -> web.Response:
@@ -102,32 +110,43 @@ async def _api_scan(request: web.Request) -> web.Response:
     if cdd:
         if request.app.get("on_scan_cdd") is None:
             return web.json_response({"error": "ClassDeeDee check-in isn't configured"}, status=400)
-        if _scan_lock.locked():
-            return web.json_response({"error": "another scan is still processing — hold on"}, status=429)
         sid, nonce = cdd
-        async with _scan_lock:
-            try:
-                summary = await request.app["on_scan_cdd"](sid, nonce, channel_id, scanner_id)
-            except Exception:
-                log.exception("ClassDeeDee scan handler blew up for sid=%s", sid)
-                return web.json_response({"error": "check-in failed, see bot logs"}, status=500)
-        return web.json_response(summary)
+        return await _dispatch(
+            f"classdeedee:{sid}",
+            lambda: request.app["on_scan_cdd"](sid, nonce, channel_id, scanner_id),
+            what=f"sid={sid}",
+        )
 
     url = extract_attendance_url(raw)
     if not url:
         return web.json_response({"error": "that QR code is not an attendance code"}, status=400)
 
-    if _scan_lock.locked():
-        return web.json_response({"error": "another scan is still processing — hold on"}, status=429)
+    return await _dispatch(
+        url,
+        lambda: request.app["on_scan"](url, channel_id, scanner_id),
+        what=url,
+    )
 
-    async with _scan_lock:
-        try:
-            summary = await request.app["on_scan"](url, channel_id, scanner_id)
-        except Exception:
-            log.exception("Scan handler blew up for %s", url)
-            return web.json_response({"error": "check-in failed, see bot logs"}, status=500)
 
-    return web.json_response(summary)
+async def _dispatch(key: str, run, *, what: str) -> web.Response:
+    """Run one scan, refusing a second scan of the same code while it's live.
+
+    A different code scanned at the same time runs concurrently — see the note
+    on _inflight above.
+    """
+    if key in _inflight:
+        return web.json_response(
+            {"error": "that code is already being checked in — hold on"}, status=429
+        )
+
+    _inflight.add(key)
+    try:
+        return web.json_response(await run())
+    except Exception:
+        log.exception("Scan handler blew up for %s", what)
+        return web.json_response({"error": "check-in failed, see bot logs"}, status=500)
+    finally:
+        _inflight.discard(key)
 
 
 async def start_web_server(on_scan, on_scan_cdd=None, on_identify=None,

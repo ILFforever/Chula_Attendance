@@ -188,15 +188,28 @@ def _parse_iso(ts: str):
         return None
 
 
-def is_duplicate_link(url: str) -> bool:
-    """True if this exact attendance URL has already been processed recently."""
+def claim_link(key: str) -> bool:
+    """Record `key` as seen and report whether this caller was the first.
+
+    `key` is an MCV attendance URL, or "classdeedee:<sid>" for a ClassDeeDee
+    QR, which has no URL to remember and a nonce too short-lived to be useful.
+
+    Checking and marking have to happen in one step. Scans used to be
+    serialized by a global lock in the scanner, so the gap between a "have I
+    seen this?" read and the later write was unreachable; now that an MCV link
+    and a ClassDeeDee QR can be processed at the same time, two scans of the
+    same code could both read "not seen" and both award leaderboard credit.
+    There is no await between the read and the write here, so the event loop
+    cannot interleave two callers.
+
+    A code that fails to check anybody in is still marked seen, matching the
+    previous behaviour of marking unconditionally once processing began.
+    """
     prune_seen_links()
-    return url in seen_links
-
-
-def mark_link_seen(url: str):
-    seen_links[url] = datetime.now(timezone.utc).isoformat()
+    first_sighting = key not in seen_links
+    seen_links[key] = datetime.now(timezone.utc).isoformat()
     persist_leaderboard()
+    return first_sighting
 
 
 # ---------------------------------------------------------------------------

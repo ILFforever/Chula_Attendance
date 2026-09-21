@@ -23,7 +23,13 @@ Discord bot (`discord.py`) that auto-checks-in registered users for two unrelate
 
 **Two independent platform integrations**, each self-contained under its own package:
 - `attendance_bot/mcv/` — MCV login/OAuth flow (`attendance.py`), plus public course-code lookup via OpenGraph metadata scraping and CU Get Reg (`cugetreg.py`). No MCV login needed just to identify a course from a posted link.
-- `attendance_bot/classdeedee/` — ChulaSSO CAS ticket login (`login.py`) and QR-based check-in (`attendance.py`). The attendance QR encodes `{sid, nonce}` and the nonce is only valid ~8s, so all logins for one scan run concurrently across a bounded thread pool (`CDD_CHECKIN_CONCURRENCY`, default 16) — this bound exists to fit inside that window without spiking memory, not for general concurrency control.
+- `attendance_bot/classdeedee/` — ChulaSSO CAS ticket login (`login.py`) and QR-based check-in (`attendance.py`). The attendance QR encodes `{sid, nonce}` and the nonce is only valid ~8s, so all logins for one scan must run concurrently to land inside that window.
+
+**Shared check-in plumbing (`attendance_bot/checkin/`)** is to attendance what `attendance_bot/homework/` is to the homework check: each platform keeps its own login/check-in logic, while target collection (`collect_targets` — opt-out, enrollment filter, credential resolution) and the bounded fan-out (`run_batch`) live in one place so the two paths can't drift. Both platforms check in concurrently.
+
+The concurrency cap (`CHECKIN_CONCURRENCY`, default 16) is a process-wide semaphore, not a per-scan pool size: an MCV link and a ClassDeeDee QR can be processed at the same time, and a per-scan bound would let two overlapping scans open twice the sessions the 256 MB Fly instance has room for. `CDD_CHECKIN_CONCURRENCY` is still honoured as a fallback name.
+
+Scans are deduplicated per code rather than serialized globally — `webserver._inflight` rejects a second scan of the *same* code with a 429 while the first is live, but two different codes proceed concurrently. Anything that checks "have I seen this code?" and then records it must use `config.claim_link()`, which does both in one step; doing it in two lets two concurrent scans of one code both claim leaderboard credit.
 
 A user's login method (CU Net vs. MyCourseVille account) determines which platform(s) they're checked into automatically; MCV-account users must separately add a ChulaSSO login via `/deedeeregister` to also be covered on ClassDeeDee.
 
@@ -39,4 +45,4 @@ A user's login method (CU Net vs. MyCourseVille account) determines which platfo
 
 **No scheduled/background jobs exist yet** — everything today is event-driven (Discord message or web scan). A recurring task (e.g. `discord.ext.tasks.loop`) would need to be started from `setup_hook()` in `client.py`, same place the web server is started.
 
-**Config/env vars** are all read once in `attendance_bot/config.py` (see that file for the full list — `DATA_DIR`, `SCAN_SECRET`, `SCAN_BASE_URL`, `WEB_PORT`, `CDD_CHECKIN_CONCURRENCY`, etc.). Add new ones there, not inline elsewhere.
+**Config/env vars** are all read once in `attendance_bot/config.py` (see that file for the full list — `DATA_DIR`, `SCAN_SECRET`, `SCAN_BASE_URL`, `WEB_PORT`, etc.). Add new ones there, not inline elsewhere. The one exception is `CHECKIN_CONCURRENCY`, read in `attendance_bot/checkin/runner.py` next to the semaphore it sizes.
