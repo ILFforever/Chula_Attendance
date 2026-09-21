@@ -19,18 +19,27 @@ CHECKIN_CONCURRENCY = max(1, int(
     or "16"
 ))
 
-# Process-wide, not per-scan. Each worker holds a slot for the whole of its
-# login+check, so N simultaneous scans still never exceed CHECKIN_CONCURRENCY
-# concurrent sessions — which is what keeps a double scan inside the Fly
-# instance's 256 MB budget.
+# One bound per platform, process-wide but NOT shared between platforms. Each
+# worker holds a slot for the whole of its login+check, so any number of
+# simultaneous scans of one platform still never exceed CHECKIN_CONCURRENCY
+# sessions for it.
 #
-# Roughly ~1.5 MB per concurrent login (measured against live ChulaSSO via
-# /bench): TLS buffers, the SSO round-trip bodies and urllib3 pool state.
-# MyCourseVille used to cost far more on top of that, because login() built a
-# BeautifulSoup tree for the whole SSO page (~33x the source HTML, ~3.3 MB on
-# a 100 KB page). That parse is now strained to the <form> alone, bringing it
-# down to ~13 KB and leaving both platforms at about the same per-login cost.
-_login_slots = threading.BoundedSemaphore(CHECKIN_CONCURRENCY)
+# These were a single shared semaphore, which let MyCourseVille starve the one
+# path that has a deadline. Measured on the live instance: an MCV run holds its
+# slots for up to ~4.5s, while a ClassDeeDee scan needs ~3s of its own and the
+# QR nonce dies at ~8s — so an MCV run in flight could consume almost the whole
+# window before ClassDeeDee got a single slot. Separate pools mean ClassDeeDee
+# never queues behind MyCourseVille at all.
+#
+# Affordable because the two cost very different amounts per concurrent login
+# (measured via /deedeebench and /mcvbench): ClassDeeDee ~1.5 MB — TLS buffers,
+# SSO round-trip bodies, urllib3 pool state — and MyCourseVille ~0.3 MB now
+# that its form parse is strained. Both pools saturated is ~29 MB, comfortably
+# inside the 256 MB instance.
+_login_slots = {
+    "mcv": threading.BoundedSemaphore(CHECKIN_CONCURRENCY),
+    "classdeedee": threading.BoundedSemaphore(CHECKIN_CONCURRENCY),
+}
 
 
 @dataclass
@@ -125,6 +134,7 @@ def run_batch(
     targets: list[CheckInTarget],
     check_one: Callable[[CheckInTarget], str],
     *,
+    platform: str,
     label: str,
     deadline_seconds: int | None = None,
 ) -> list[tuple[str, str]]:
@@ -141,19 +151,20 @@ def run_batch(
     if not targets:
         return []
 
+    slots = _login_slots[platform]
     workers = min(CHECKIN_CONCURRENCY, len(targets))
     log.info("%s: %d user(s) across %d worker(s)", label, len(targets), workers)
     started = time.perf_counter()
 
     def _one(target: CheckInTarget) -> tuple[str, str]:
-        with _login_slots:
+        with slots:
             return target.uid, check_one(target)
 
     results: list[tuple[str, str]] = [("", "")] * len(targets)
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix=label) as pool:
-        slots = {pool.submit(_one, t): i for i, t in enumerate(targets)}
-        for future in as_completed(slots):
-            results[slots[future]] = future.result()
+        futures = {pool.submit(_one, t): i for i, t in enumerate(targets)}
+        for future in as_completed(futures):
+            results[futures[future]] = future.result()
 
     elapsed = time.perf_counter() - started
     log.info("%s done: %d/%d ok in %.2fs", label, succeeded(results), len(results), elapsed)
