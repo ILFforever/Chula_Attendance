@@ -643,6 +643,7 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
                 "`/deedeecheck` — Test if your saved credentials can log into ClassDeeDee (ChulaSSO)\n"
                 "`/deedeebench` — (temp) Benchmark logging in all users to ClassDeeDee (timing & RAM)\n"
                 "`/mcvbench` — (temp) Benchmark logging in all users to MyCourseVille (timing & RAM)\n"
+                "`/benchms` — (temp) Log everyone into both platforms, report timings only (ms)\n"
                 "`/status` — Show bot uptime, registered users, and monitored channels\n"
                 "`/leaderboard` — See who's brought in the most check-ins (post a link or scan a QR)\n"
                 "\n"
@@ -1225,6 +1226,30 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
             _render_bench(stats, "🧪 **MyCourseVille login benchmark**", "no MCV login"),
             ephemeral=True,
         )
+
+    @tree.command(name="benchms", description="(temp) Log everyone into both platforms — timings only, in ms")
+    async def cmd_benchms(interaction: discord.Interaction):
+        # Same temporary-test caveat as the other two benches. This one exists
+        # to watch per-login times as CHECKIN_CONCURRENCY is raised: if they
+        # stay flat the platform is absorbing the extra concurrency, and if
+        # they stretch we have found its ceiling. Deliberately reports nothing
+        # but milliseconds — no names, no failures, no RAM.
+        await interaction.response.send_message(
+            "⏳ Timing logins on both platforms …", ephemeral=True
+        )
+
+        lines = ["🧪 **Login timing**"]
+        for title, run in (("MyCourseVille", mcv_bench_logins), ("ClassDeeDee", bench_logins)):
+            stats = await bot.loop.run_in_executor(executor, run)
+            if stats.get("error") or not stats.get("attempted"):
+                lines.append(f"• {title} — —")
+                continue
+            lines.append(
+                f"• {title} — **{stats['wall'] * 1000:.0f} ms** "
+                f"(min {stats['fastest'] * 1000:.0f} · max {stats['slowest'] * 1000:.0f})"
+            )
+
+        await interaction.followup.send("\n".join(lines), ephemeral=True)
 
     @tree.command(name="status", description="Show bot uptime and status")
     @app_commands.allowed_installs(guilds=True, users=True)
