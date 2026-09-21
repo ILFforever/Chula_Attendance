@@ -81,6 +81,20 @@ def resolve_cdd_credentials(info: dict, purpose: str) -> tuple[str, str] | None:
     return None
 
 
+def _resolve_target(info: dict) -> tuple[str, str, str] | None:
+    """collect_targets() resolver for ClassDeeDee. None when the user has no
+    usable ChulaSSO login (an MCV-only account with no /deedeeregister).
+
+    Shared by check_in_all and bench_logins so the benchmark always measures
+    exactly the set of users a real check-in would attempt.
+    """
+    creds = resolve_cdd_credentials(info, "checkin")
+    if creds is None:
+        return None
+    username, password = creds
+    return username, password, "chulasso"
+
+
 def parse_attendance_qr(text: str) -> tuple[str, str] | None:
     """Return (sessionid, nonce) from a scanned ClassDeeDee attendance QR.
 
@@ -194,20 +208,20 @@ def bench_logins() -> dict:
     if not registered_users:
         return {"error": "No users registered. Use `/register` first."}
 
-    per: list[dict] = []
-    targets: list[tuple[str, str, str]] = []  # (display_name, username, password)
-    for uid, info in registered_users.items():
-        name = info.get("display_name", info.get("username", uid))
-        try:
-            creds = resolve_cdd_credentials(info, "checkin")
-        except ValueError:
-            per.append({"name": name, "ok": False, "seconds": 0.0, "error": "decrypt failed"})
-            continue
-        if creds is None:
-            per.append({"name": name, "ok": False, "seconds": 0.0, "error": "no ClassDeeDee login (use /deedeeregister)"})
-            continue
-        username, pw = creds
-        targets.append((name, username, pw))
+    # Same target set a real check-in would use — including the /autocheckin
+    # opt-out, which this used to ignore and so benchmarked users who would
+    # never actually be checked in.
+    collected = collect_targets(_resolve_target)
+    targets = collected.targets
+
+    # Undecryptable credentials are the only real failure here. Users with no
+    # ClassDeeDee login at all are reported separately: a check-in skips them
+    # silently, so counting them as failures made a healthy run look broken.
+    per: list[dict] = [
+        {"name": registered_users.get(uid, {}).get("display_name", uid),
+         "ok": False, "seconds": 0.0, "error": "decrypt failed"}
+        for uid, _ in collected.skipped
+    ]
 
     workers = min(CHECKIN_CONCURRENCY, len(targets)) if targets else 1
     waves = -(-len(targets) // workers) if targets else 0  # ceil division
@@ -215,8 +229,8 @@ def bench_logins() -> dict:
     rss_before, _ = _read_rss_mb()
     started = time.perf_counter()
 
-    def _login(t: tuple[str, str, str]) -> dict:
-        name, username, pw = t
+    def _login(t) -> dict:
+        name, username, pw = t.display_name, t.username, t.password
         t0 = time.perf_counter()
         try:
             login_classdeedee(username, pw).close()
@@ -241,10 +255,11 @@ def bench_logins() -> dict:
     login_times = [r["seconds"] for r in per if r["ok"]]
 
     stats = {
-        "total": len(per),
+        "total": len(per) + len(collected.unavailable),
         "attempted": len(targets),
         "ok": ok,
         "failed": len(per) - ok,
+        "no_login": len(collected.unavailable),
         "wall": wall,
         "workers": workers,
         "waves": waves,
@@ -288,14 +303,7 @@ def check_in_all(sid: str, nonce: str) -> list[tuple[str, str]]:
 
     # Users with no ClassDeeDee login (MCV-only, no /deedeeregister) resolve to
     # None and are skipped silently so scan results stay clean.
-    def _resolve(info: dict) -> tuple[str, str, str] | None:
-        creds = resolve_cdd_credentials(info, "checkin")
-        if creds is None:
-            return None
-        username, password = creds
-        return username, password, "chulasso"
-
-    collected = collect_targets(_resolve)
+    collected = collect_targets(_resolve_target)
     if not collected.targets:
         return collected.skipped
 

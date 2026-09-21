@@ -1158,9 +1158,14 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
         def mb(v):
             return f"{v:.1f} MB" if isinstance(v, (int, float)) else "n/a"
 
+        tally = f"✅ {stats['ok']} ok · ❌ {stats['failed']} failed"
+        if stats.get("no_login"):
+            # Not failures — a real check-in skips these users silently.
+            tally += f" · ⏭️ {stats['no_login']} no ClassDeeDee login"
         lines = [
             "🧪 **ClassDeeDee login benchmark**",
-            f"• Users: {stats['total']} → ✅ {stats['ok']} ok · ❌ {stats['failed']} failed",
+            f"• Users: {stats['total']} → {tally}",
+            f"• Attempted: {stats['attempted']} (excludes /autocheckin off)",
             f"• Wall time: **{stats['wall']:.2f}s** (cap {stats['workers']} workers, {stats['waves']} wave(s))",
             f"• Per-login: fastest {stats['fastest']:.2f}s · slowest {stats['slowest']:.2f}s",
         ]
