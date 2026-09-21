@@ -22,7 +22,15 @@ CHECKIN_CONCURRENCY = max(1, int(
 # Process-wide, not per-scan. Each worker holds a slot for the whole of its
 # login+check, so N simultaneous scans still never exceed CHECKIN_CONCURRENCY
 # concurrent sessions — which is what keeps a double scan inside the Fly
-# instance's 256 MB budget (~1.5 MB per concurrent login).
+# instance's 256 MB budget.
+#
+# Measured cost is dominated entirely by MyCourseVille, whose login() parses
+# the SSO form with BeautifulSoup(html.parser); a parse tree runs ~33x the
+# source HTML, so a 100 KB login page costs ~3.4 MB per concurrent login
+# (16 -> ~54 MB, on top of a ~30 MB baseline). ClassDeeDee does no HTML
+# parsing at all and costs ~20 KB per login, so this cap is effectively a
+# MyCourseVille memory bound. Raise it only after re-measuring: cost scales
+# with MCV's page size, which is not under our control.
 _login_slots = threading.BoundedSemaphore(CHECKIN_CONCURRENCY)
 
 
@@ -117,9 +125,13 @@ def run_batch(
 ) -> list[tuple[str, str]]:
     """Run `check_one` for every target concurrently, globally bounded.
 
-    Returns (uid, message) tuples in completion order. `deadline_seconds`, when
-    given, only drives a warning log — it is the window the platform's code is
-    valid for (ClassDeeDee's rotating nonce), not a timeout.
+    Returns (uid, message) tuples in `targets` order, not completion order —
+    these are rendered straight into one Discord message, and a list that
+    reshuffles on every run makes it needlessly hard to find yourself in it.
+
+    `deadline_seconds`, when given, only drives a warning log — it is the window
+    the platform's code is valid for (ClassDeeDee's rotating nonce), not a
+    timeout.
     """
     if not targets:
         return []
@@ -132,10 +144,11 @@ def run_batch(
         with _login_slots:
             return target.uid, check_one(target)
 
-    results: list[tuple[str, str]] = []
+    results: list[tuple[str, str]] = [("", "")] * len(targets)
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix=label) as pool:
-        for future in as_completed([pool.submit(_one, t) for t in targets]):
-            results.append(future.result())
+        slots = {pool.submit(_one, t): i for i, t in enumerate(targets)}
+        for future in as_completed(slots):
+            results[slots[future]] = future.result()
 
     elapsed = time.perf_counter() - started
     log.info("%s done: %d/%d ok in %.2fs", label, succeeded(results), len(results), elapsed)
