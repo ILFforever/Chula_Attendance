@@ -21,15 +21,15 @@ small Fly instance. Tune with the CHECKIN_CONCURRENCY env var (default 16).
 import json
 import time
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests as http_requests
 
 from attendance_bot.config import log, registered_users
 # How many users log in at once is bounded in attendance_bot/checkin/ and shared
 # with MyCourseVille, so two overlapping scans can't each open a full class's
-# worth of sessions. CHECKIN_CONCURRENCY is used by bench_logins below.
-from attendance_bot.checkin import CHECKIN_CONCURRENCY, collect_targets, run_batch
+# worth of sessions.
+from attendance_bot.checkin import collect_targets, run_batch
+from attendance_bot.checkin.bench import run_login_bench
 from attendance_bot.security.crypto import decrypt_password
 from attendance_bot.mcv.attendance import TZ_BANGKOK
 from attendance_bot.classdeedee.login import (
@@ -172,116 +172,23 @@ def check_in_one(
         log.debug("ClassDeeDee check-in END: %s", name)
 
 
-def _read_rss_mb() -> tuple[float | None, float | None]:
-    """Return (current_rss_mb, peak_rss_mb). Dependency-free on Linux/Fly.
-
-    Reads VmRSS/VmHWM from /proc/self/status (VmHWM is the process's peak RSS,
-    so we get the high-water mark without a sampler thread). Falls back to
-    psutil, then to (None, None) on platforms without either (e.g. Windows).
-    """
+def _attempt_login(target) -> str | None:
+    """One ClassDeeDee login for the benchmark. None on success, else a reason."""
     try:
-        cur = peak = None
-        with open("/proc/self/status", encoding="ascii") as f:
-            for line in f:
-                if line.startswith("VmRSS:"):
-                    cur = int(line.split()[1]) / 1024  # kB → MB
-                elif line.startswith("VmHWM:"):
-                    peak = int(line.split()[1]) / 1024
-        if cur is not None:
-            return cur, peak
-    except OSError:
-        pass
-    try:
-        import psutil  # optional
-        return psutil.Process().memory_info().rss / 1e6, None
-    except Exception:
-        return None, None
+        login_classdeedee(target.username, target.password).close()
+        return None
+    except CddWrongCredentialsError:
+        return "wrong credentials"
+    except CddLoginError as exc:
+        return f"login failed ({exc})"[:80]
+    except http_requests.RequestException as exc:
+        return f"network ({exc})"[:80]
 
 
 def bench_logins() -> dict:
-    """Log in every registered user in parallel; measure timing and RAM.
-
-    Does login-only (no check-in) — this is the stress/timing test for the
-    concurrent-login path. Logs a full breakdown to the bot log (Fly logs) and
-    returns a stats dict for a Discord summary.
-    """
-    if not registered_users:
-        return {"error": "No users registered. Use `/register` first."}
-
-    # Same target set a real check-in would use — including the /autocheckin
-    # opt-out, which this used to ignore and so benchmarked users who would
-    # never actually be checked in.
-    collected = collect_targets(_resolve_target)
-    targets = collected.targets
-
-    # Undecryptable credentials are the only real failure here. Users with no
-    # ClassDeeDee login at all are reported separately: a check-in skips them
-    # silently, so counting them as failures made a healthy run look broken.
-    per: list[dict] = [
-        {"name": registered_users.get(uid, {}).get("display_name", uid),
-         "ok": False, "seconds": 0.0, "error": "decrypt failed"}
-        for uid, _ in collected.skipped
-    ]
-
-    workers = min(CHECKIN_CONCURRENCY, len(targets)) if targets else 1
-    waves = -(-len(targets) // workers) if targets else 0  # ceil division
-
-    rss_before, _ = _read_rss_mb()
-    started = time.perf_counter()
-
-    def _login(t) -> dict:
-        name, username, pw = t.display_name, t.username, t.password
-        t0 = time.perf_counter()
-        try:
-            login_classdeedee(username, pw).close()
-            return {"name": name, "ok": True, "seconds": time.perf_counter() - t0, "error": None}
-        except CddWrongCredentialsError:
-            return {"name": name, "ok": False, "seconds": time.perf_counter() - t0, "error": "wrong credentials"}
-        except CddLoginError as exc:
-            return {"name": name, "ok": False, "seconds": time.perf_counter() - t0, "error": f"login failed ({exc})"[:80]}
-        except http_requests.RequestException as exc:
-            return {"name": name, "ok": False, "seconds": time.perf_counter() - t0, "error": f"network ({exc})"[:80]}
-        except Exception as exc:  # noqa: BLE001 - benchmark must never crash the caller
-            return {"name": name, "ok": False, "seconds": time.perf_counter() - t0, "error": f"unexpected ({exc})"[:80]}
-
-    if targets:
-        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="cdd_bench") as pool:
-            for future in as_completed([pool.submit(_login, t) for t in targets]):
-                per.append(future.result())
-
-    wall = time.perf_counter() - started
-    rss_after, rss_peak = _read_rss_mb()
-    ok = sum(1 for r in per if r["ok"])
-    login_times = [r["seconds"] for r in per if r["ok"]]
-
-    stats = {
-        "total": len(per) + len(collected.unavailable),
-        "attempted": len(targets),
-        "ok": ok,
-        "failed": len(per) - ok,
-        "no_login": len(collected.unavailable),
-        "wall": wall,
-        "workers": workers,
-        "waves": waves,
-        "slowest": max(login_times) if login_times else 0.0,
-        "fastest": min(login_times) if login_times else 0.0,
-        "rss_before": rss_before,
-        "rss_after": rss_after,
-        "rss_peak": rss_peak,
-        "per": per,
-    }
-
-    # Fly logs: one summary line + per-user detail.
-    def _f(v):
-        return f"{v:.1f}" if isinstance(v, (int, float)) else "n/a"
-    log.info(
-        "BENCH logins: %d/%d ok in %.2fs | %d worker(s), %d wave(s) | RSS before=%s after=%s peak=%s MB",
-        ok, len(targets), wall, workers, waves, _f(rss_before), _f(rss_after), _f(rss_peak),
-    )
-    for r in per:
-        log.info("  BENCH %-24s %-4s %5.2fs  %s", r["name"], "OK" if r["ok"] else "FAIL", r["seconds"], r["error"] or "")
-
-    return stats
+    """Log every eligible user into ClassDeeDee in parallel; time it and
+    measure RAM. Login only — no attendance is recorded."""
+    return run_login_bench(_resolve_target, _attempt_login, label="classdeedee")
 
 
 def check_in_all(sid: str, nonce: str) -> list[tuple[str, str]]:
