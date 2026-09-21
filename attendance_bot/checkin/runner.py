@@ -24,13 +24,12 @@ CHECKIN_CONCURRENCY = max(1, int(
 # concurrent sessions — which is what keeps a double scan inside the Fly
 # instance's 256 MB budget.
 #
-# Measured cost is dominated entirely by MyCourseVille, whose login() parses
-# the SSO form with BeautifulSoup(html.parser); a parse tree runs ~33x the
-# source HTML, so a 100 KB login page costs ~3.4 MB per concurrent login
-# (16 -> ~54 MB, on top of a ~30 MB baseline). ClassDeeDee does no HTML
-# parsing at all and costs ~20 KB per login, so this cap is effectively a
-# MyCourseVille memory bound. Raise it only after re-measuring: cost scales
-# with MCV's page size, which is not under our control.
+# Roughly ~1.5 MB per concurrent login (measured against live ChulaSSO via
+# /bench): TLS buffers, the SSO round-trip bodies and urllib3 pool state.
+# MyCourseVille used to cost far more on top of that, because login() built a
+# BeautifulSoup tree for the whole SSO page (~33x the source HTML, ~3.3 MB on
+# a 100 KB page). That parse is now strained to the <form> alone, bringing it
+# down to ~13 KB and leaving both platforms at about the same per-login cost.
 _login_slots = threading.BoundedSemaphore(CHECKIN_CONCURRENCY)
 
 
