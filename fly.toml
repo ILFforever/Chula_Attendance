@@ -13,12 +13,17 @@ primary_region = 'sin'
   PYTHONUNBUFFERED = '1'
   DATA_DIR = '/data'
   # Max concurrent logins per platform (each platform has its own pool, so the
-  # ceiling across both is double this). Measured per concurrent login:
-  # ClassDeeDee ~1.5 MB, MyCourseVille ~0.3 MB — 24 each is ~43 MB on top of a
-  # ~80 MB baseline, well inside the 256 MB below. Raise further only after
-  # re-running /benchms: the binding constraint is whether ChulaSSO and MCV
-  # keep per-login times flat under more concurrency, not this machine's RAM.
-  CHECKIN_CONCURRENCY = '24'
+  # ceiling across both is double this).
+  #
+  # Do not raise this without re-running /benchms. RAM is not the limit —
+  # measured cost is ~1.5 MB per ClassDeeDee login and ~0.3 MB per MyCourseVille
+  # one, so even 24 each is only ~43 MB on top of a ~80 MB baseline. The limit is
+  # MyCourseVille itself: at 16 it serves a 24-user class in ~4.5s, and at 24 it
+  # throttles hard — measured 44s then 58s on consecutive runs, with even the
+  # fastest login going from 0.5s to 4.6s. login() retries 3x at a 30s timeout,
+  # so once MCV stalls, one login compounds into a minute. ClassDeeDee showed no
+  # such effect (unchanged at ~3s), but it shares this setting.
+  CHECKIN_CONCURRENCY = '16'
   # Public base URL the /scanner command hands out. Not a secret — the token
   # is appended as a URL fragment at DM time.
   SCAN_BASE_URL = 'https://chula-attendance-bot.fly.dev'
