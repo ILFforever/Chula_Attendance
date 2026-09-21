@@ -3,7 +3,7 @@ from datetime import datetime, timezone, timedelta
 from urllib.parse import urljoin
 
 import requests as http_requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, SoupStrainer
 
 from attendance_bot.config import log, registered_users
 from attendance_bot.checkin import collect_targets, run_batch
@@ -112,6 +112,9 @@ MCV_OAUTH_PLATFORM = (
 REQUEST_TIMEOUT = 30
 TZ_BANGKOK = timezone(timedelta(hours=7))
 
+# login() reads nothing outside the login <form> — see the parse call there.
+_FORMS_ONLY = SoupStrainer("form")
+
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -170,7 +173,13 @@ class AttendanceLogger:
             # 2. Follow OAuth URL → lands on the SSO login form
             resp = session.get(oauth_url, timeout=REQUEST_TIMEOUT)
             resp.raise_for_status()
-            soup = BeautifulSoup(resp.text, "html.parser")
+            # Only the <form> is ever read below, so don't objectify the rest of
+            # the page. A BeautifulSoup tree runs ~33x the source HTML, and the
+            # SSO page is mostly nav/script/style — straining it cuts this parse
+            # from ~3.3 MB to ~13 KB on a 100 KB page, with identical extraction.
+            # That matters because logins now run concurrently: the full parse
+            # cost ~53 MB at CHECKIN_CONCURRENCY=16, against a 256 MB instance.
+            soup = BeautifulSoup(resp.text, "html.parser", parse_only=_FORMS_ONLY)
 
             # Find the login form and its action URL
             form = soup.find("form", id="cv-login-cvecologin-form")
