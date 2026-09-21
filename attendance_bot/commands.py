@@ -54,6 +54,7 @@ from attendance_bot.classdeedee.login import (
     LoginError as CddLoginError,
 )
 from attendance_bot.classdeedee.attendance import bench_logins, resolve_cdd_credentials
+from attendance_bot.mcv.attendance import bench_logins as mcv_bench_logins
 from attendance_bot.mcv.cugetreg import fetch_course_name
 
 
@@ -641,6 +642,7 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
                 "`/logincheck` — Test if your saved credentials can log in\n"
                 "`/deedeecheck` — Test if your saved credentials can log into ClassDeeDee (ChulaSSO)\n"
                 "`/deedeebench` — (temp) Benchmark logging in all users to ClassDeeDee (timing & RAM)\n"
+                "`/mcvbench` — (temp) Benchmark logging in all users to MyCourseVille (timing & RAM)\n"
                 "`/status` — Show bot uptime, registered users, and monitored channels\n"
                 "`/leaderboard` — See who's brought in the most check-ins (post a link or scan a QR)\n"
                 "\n"
@@ -1141,6 +1143,47 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
                 f"💥 **{display_name}** — error: {error}", ephemeral=True
             )
 
+    def _render_bench(stats: dict, title: str, skip_label: str) -> str:
+        def mb(v):
+            return f"{v:.1f} MB" if isinstance(v, (int, float)) else "n/a"
+
+        tally = f"✅ {stats['ok']} ok · ❌ {stats['failed']} failed"
+        if stats.get("no_login"):
+            # Not failures — a real check-in skips these users silently.
+            tally += f" · ⏭️ {stats['no_login']} {skip_label}"
+        lines = [
+            title,
+            f"• Users: {stats['total']} → {tally}",
+            f"• Attempted: {stats['attempted']} (excludes /autocheckin off)",
+            f"• Wall time: **{stats['wall']:.2f}s** (cap {stats['workers']} workers, {stats['waves']} wave(s))",
+            f"• Per-login: fastest {stats['fastest']:.2f}s · slowest {stats['slowest']:.2f}s",
+        ]
+        if stats["rss_peak"] is not None:
+            lines.append(f"• RAM: {mb(stats['rss_before'])} → {mb(stats['rss_after'])} (peak **{mb(stats['rss_peak'])}**)")
+        elif stats["rss_before"] is not None:
+            lines.append(f"• RAM: {mb(stats['rss_before'])} → {mb(stats['rss_after'])} (peak n/a here)")
+        else:
+            lines.append("• RAM: not measurable on this platform (works on Fly/Linux)")
+
+        # Peak RSS is a lifetime high-water mark, so this is an upper bound on
+        # what a login actually costs, not an exact figure.
+        concurrent = min(stats["workers"], stats["attempted"])
+        if concurrent and stats["rss_peak"] is not None and stats["rss_before"] is not None:
+            lines.append(f"• ≤{(stats['rss_peak'] - stats['rss_before']) / concurrent:.2f} MB "
+                         f"per concurrent login ({concurrent} at once)")
+
+        if stats["platform"] == "classdeedee" and stats["wall"] > 8:
+            lines.append(f"⚠️ Wall {stats['wall']:.1f}s > ~8s nonce window — a real check-in would drop late users.")
+
+        fails = [r for r in stats["per"] if not r["ok"]]
+        if fails:
+            lines.append("\n**Failures:**")
+            lines.extend(f"• {r['name']} — {r['error']}" for r in fails[:15])
+            if len(fails) > 15:
+                lines.append(f"…and {len(fails) - 15} more (see Fly logs)")
+
+        return "\n".join(l for l in lines if l)
+
     @tree.command(name="deedeebench", description="(temp) Benchmark logging in ALL users to ClassDeeDee — timing & RAM")
     async def cmd_deedeebench(interaction: discord.Interaction):
         # NOTE: intentionally ungated — this is a temporary test command; remove it
@@ -1155,38 +1198,33 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
             await interaction.followup.send(f"❌ {stats['error']}", ephemeral=True)
             return
 
-        def mb(v):
-            return f"{v:.1f} MB" if isinstance(v, (int, float)) else "n/a"
+        await interaction.followup.send(
+            _render_bench(stats, "🧪 **ClassDeeDee login benchmark**", "no ClassDeeDee login"),
+            ephemeral=True,
+        )
 
-        tally = f"✅ {stats['ok']} ok · ❌ {stats['failed']} failed"
-        if stats.get("no_login"):
-            # Not failures — a real check-in skips these users silently.
-            tally += f" · ⏭️ {stats['no_login']} no ClassDeeDee login"
-        lines = [
-            "🧪 **ClassDeeDee login benchmark**",
-            f"• Users: {stats['total']} → {tally}",
-            f"• Attempted: {stats['attempted']} (excludes /autocheckin off)",
-            f"• Wall time: **{stats['wall']:.2f}s** (cap {stats['workers']} workers, {stats['waves']} wave(s))",
-            f"• Per-login: fastest {stats['fastest']:.2f}s · slowest {stats['slowest']:.2f}s",
-        ]
-        if stats["rss_peak"] is not None:
-            lines.append(f"• RAM: {mb(stats['rss_before'])} → {mb(stats['rss_after'])} (peak **{mb(stats['rss_peak'])}**)")
-        elif stats["rss_before"] is not None:
-            lines.append(f"• RAM: {mb(stats['rss_before'])} → {mb(stats['rss_after'])} (peak n/a here)")
-        else:
-            lines.append("• RAM: not measurable on this platform (works on Fly/Linux)")
+    @tree.command(name="mcvbench", description="(temp) Benchmark logging in ALL users to MyCourseVille — timing & RAM")
+    async def cmd_mcvbench(interaction: discord.Interaction):
+        # Same temporary-test caveat as /deedeebench. This one matters more:
+        # MCV logins are heavier and only became concurrent recently, so this is
+        # how we find out whether MCV tolerates a class-sized burst from one IP
+        # before a real class does.
+        await interaction.response.send_message(
+            "⏳ Benchmarking MyCourseVille logins for **all** users … "
+            "this is heavier than the ClassDeeDee bench (OAuth chain + form parse per user) "
+            "and may take a while. Full breakdown in the Fly logs.",
+            ephemeral=True,
+        )
 
-        if stats["wall"] > 8:
-            lines.append(f"⚠️ Wall {stats['wall']:.1f}s > ~8s nonce window — a real check-in would drop late users.")
+        stats = await bot.loop.run_in_executor(executor, mcv_bench_logins)
+        if stats.get("error"):
+            await interaction.followup.send(f"❌ {stats['error']}", ephemeral=True)
+            return
 
-        fails = [r for r in stats["per"] if not r["ok"]]
-        if fails:
-            lines.append("\n**Failures:**")
-            lines.extend(f"• {r['name']} — {r['error']}" for r in fails[:15])
-            if len(fails) > 15:
-                lines.append(f"…and {len(fails) - 15} more (see Fly logs)")
-
-        await interaction.followup.send("\n".join(lines), ephemeral=True)
+        await interaction.followup.send(
+            _render_bench(stats, "🧪 **MyCourseVille login benchmark**", "no MCV login"),
+            ephemeral=True,
+        )
 
     @tree.command(name="status", description="Show bot uptime and status")
     @app_commands.allowed_installs(guilds=True, users=True)

@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup, SoupStrainer
 
 from attendance_bot.config import log, registered_users
 from attendance_bot.checkin import collect_targets, run_batch
+from attendance_bot.checkin.bench import run_login_bench
 from attendance_bot.security.crypto import decrypt_password
 
 # ---------------------------------------------------------------------------
@@ -379,14 +380,7 @@ class AttendanceLogger:
         if not registered_users:
             return [("", "No users registered. Use `/register` to add users.")]
 
-        def _resolve(info: dict) -> tuple[str, str, str]:
-            return (
-                info["username"],
-                decrypt_password(info["password"]),
-                info.get("login_method", "cu_net"),
-            )
-
-        collected = collect_targets(_resolve, course_code=course_id, filter_subjects=True)
+        collected = collect_targets(_resolve_target, course_code=course_id, filter_subjects=True)
 
         if not collected.matched_any:
             course_label = f"`{course_id}`" if course_id else "this course"
@@ -403,3 +397,47 @@ class AttendanceLogger:
     def cleanup(self):
         """No persistent resources to clean up with requests."""
         log.info("Cleanup called (no-op for HTTP client)")
+
+
+def _resolve_target(info: dict) -> tuple[str, str, str]:
+    """collect_targets() resolver for MyCourseVille.
+
+    Every registered user has an MCV login by definition — it is the account
+    they registered with — so this never returns None, unlike ClassDeeDee's.
+    Shared by check_in_all and bench_logins so the benchmark always measures
+    exactly the set of users a real check-in would attempt.
+    """
+    return (
+        info["username"],
+        decrypt_password(info["password"]),
+        info.get("login_method", "cu_net"),
+    )
+
+
+def _attempt_login(target) -> str | None:
+    """One MCV login for the benchmark. None on success, else a reason."""
+    logger = AttendanceLogger()
+    session = logger._new_session()
+    try:
+        logger.login(session, target.username, target.password,
+                     login_method=target.login_method)
+        return None
+    except WrongCredentialsError:
+        return "wrong credentials"
+    except LoginError as exc:
+        return f"login failed ({exc})"[:80]
+    except http_requests.RequestException as exc:
+        return f"network ({exc})"[:80]
+    finally:
+        session.close()
+
+
+def bench_logins() -> dict:
+    """Log every eligible user into MyCourseVille in parallel; time it and
+    measure RAM. Login only — no attendance is recorded.
+
+    MCV logins are heavier than ClassDeeDee's (OAuth redirect chain, a form
+    parse, and up to 3 attempts each), so this is the measurement that says
+    whether MCV tolerates a class-sized concurrent burst from one IP.
+    """
+    return run_login_bench(_resolve_target, _attempt_login, label="mcv")
