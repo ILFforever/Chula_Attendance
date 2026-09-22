@@ -643,7 +643,6 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
                 "`/deedeecheck` — Test if your saved credentials can log into ClassDeeDee (ChulaSSO)\n"
                 "`/deedeebench` — (temp) Benchmark logging in all users to ClassDeeDee (timing & RAM)\n"
                 "`/mcvbench` — (temp) Benchmark logging in all users to MyCourseVille (timing & RAM)\n"
-                "`/benchms` — (temp) Log everyone into both platforms, report timings only (ms)\n"
                 "`/status` — Show bot uptime, registered users, and monitored channels\n"
                 "`/leaderboard` — See who's brought in the most check-ins (post a link or scan a QR)\n"
                 "\n"
@@ -1164,8 +1163,10 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
             title,
             f"• Users: {stats['total']} → {tally}",
             f"• Attempted: {stats['attempted']} (excludes /autocheckin off)",
-            f"• Wall time: **{stats['wall']:.2f}s** (cap {stats['workers']} workers, {stats['waves']} wave(s))",
-            f"• Per-login: fastest {stats['fastest']:.2f}s · slowest {stats['slowest']:.2f}s",
+            f"• Wall time: **{stats['wall']:.2f}s** ({stats['wall'] * 1000:.0f} ms) "
+            f"— cap {stats['workers']} workers, {stats['waves']} wave(s)",
+            f"• Per-login: fastest {stats['fastest'] * 1000:.0f} ms · "
+            f"slowest {stats['slowest'] * 1000:.0f} ms",
         ]
         if stats["rss_peak"] is not None:
             lines.append(f"• RAM: {mb(stats['rss_before'])} → {mb(stats['rss_after'])} (peak **{mb(stats['rss_peak'])}**)")
@@ -1235,36 +1236,6 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
             _render_bench(stats, "🧪 **MyCourseVille login benchmark**", "no MCV login"),
             ephemeral=True,
         )
-
-    @tree.command(name="benchms", description="(temp) Log everyone into both platforms — timings only, in ms")
-    async def cmd_benchms(interaction: discord.Interaction):
-        # Same temporary-test caveat as the other two benches. This one exists
-        # to watch per-login times as CHECKIN_CONCURRENCY is raised: if they
-        # stay flat the platform is absorbing the extra concurrency, and if
-        # they stretch we have found its ceiling. Deliberately reports nothing
-        # but milliseconds — no names, no failures, no RAM.
-        await interaction.response.send_message(
-            "⏳ Timing logins on both platforms …", ephemeral=True
-        )
-
-        lines = ["🧪 **Login timing**"]
-        for title, run in (("MyCourseVille", mcv_bench_logins), ("ClassDeeDee", bench_logins)):
-            stats = await bot.loop.run_in_executor(executor, run)
-            if stats.get("error") or not stats.get("attempted"):
-                lines.append(f"• {title} — —")
-                continue
-
-            line = (f"• {title} — **{stats['wall'] * 1000:.0f} ms** "
-                    f"(min {stats['fastest'] * 1000:.0f} · max {stats['slowest'] * 1000:.0f})")
-            # Each bench resets the peak-RSS counter first, so this is that
-            # platform's own peak even though the two run back to back.
-            grew = _peak_growth(stats)
-            if grew is not None:
-                concurrent = min(stats["workers"], stats["attempted"])
-                line += f" · +{grew:.1f} MB ({grew / concurrent:.2f} MB/login, {concurrent} at once)"
-            lines.append(line)
-
-        await interaction.followup.send("\n".join(lines), ephemeral=True)
 
     @tree.command(name="status", description="Show bot uptime and status")
     @app_commands.allowed_installs(guilds=True, users=True)

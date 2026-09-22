@@ -42,6 +42,13 @@ _login_slots = {
 }
 
 
+def login_slots(platform: str) -> threading.BoundedSemaphore:
+    """The login bound for one platform, so the benchmark can hold the same
+    slots a real check-in does instead of running alongside them.
+    """
+    return _login_slots[platform]
+
+
 @dataclass
 class CheckInTarget:
     """One user to attempt a check-in for, with credentials already resolved."""

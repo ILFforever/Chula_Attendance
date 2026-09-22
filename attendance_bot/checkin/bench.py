@@ -16,6 +16,7 @@ from attendance_bot.checkin.runner import (
     CHECKIN_CONCURRENCY,
     CheckInTarget,
     collect_targets,
+    login_slots,
 )
 
 
@@ -107,16 +108,26 @@ def run_login_bench(
     rss_before, _ = read_rss_mb()
     started = time.perf_counter()
 
+    slots = login_slots(label)
+
     def _one(target: CheckInTarget) -> dict:
-        t0 = time.perf_counter()
-        try:
-            error = attempt_login(target)
-        except Exception as exc:  # noqa: BLE001 - a benchmark must never crash its caller
-            error = f"unexpected ({exc})"[:80]
+        # Hold the same slot a real check-in would. The pool size alone already
+        # caps this run, but without the semaphore a bench fired while a class
+        # is checking in would put double the logins on the platform — exactly
+        # the burst this command exists to measure the limits of. Timing starts
+        # after the slot is acquired so a wait doesn't inflate the per-login
+        # figure; wall time still includes it.
+        with slots:
+            t0 = time.perf_counter()
+            try:
+                error = attempt_login(target)
+            except Exception as exc:  # noqa: BLE001 - a benchmark must never crash its caller
+                error = f"unexpected ({exc})"[:80]
+            seconds = time.perf_counter() - t0
         return {
             "name": target.display_name,
             "ok": error is None,
-            "seconds": time.perf_counter() - t0,
+            "seconds": seconds,
             "error": error,
         }
 
