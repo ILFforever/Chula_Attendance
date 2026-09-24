@@ -344,6 +344,14 @@ async def on_ready():
     # globally (existing, unchanged commands are unaffected) — acceptable
     # for a bot whose command set doesn't change every restart, unlike the
     # per-guild path this replaces which updated instantly.
+    #
+    # A global sync never touches guild-scoped registrations, so the copies
+    # the old per-guild path left behind stay on Discord forever and show up
+    # as duplicates next to the global entries. Syncing an empty guild scope
+    # wipes them; once they're gone it's a cheap no-op, so it stays in.
+    for guild in bot.guilds:
+        tree.clear_commands(guild=guild)
+        await tree.sync(guild=guild)
     await tree.sync()
     await bot.change_presence(activity=discord.Activity(
         type=discord.ActivityType.watching,
