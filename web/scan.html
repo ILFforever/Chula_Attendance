@@ -185,6 +185,7 @@
 </main>
 
 <script src="/static/jsQR.js"></script>
+<script src="/static/qrenhance.js"></script>
 <script>
 (function () {
   var MCV = /https?:\/\/(?:www\.)?mycourseville\.com\/\?q=courseville\/course\/\d+\/attendance_qr_selfcheck\/\d+\/[A-Za-z0-9]+/;
@@ -608,7 +609,7 @@
   // match the enlarged preview.
   var RETICLE = 0.64;
 
-  function decodeCrop() {
+  function grabCrop() {
     var vw = video.videoWidth, vh = video.videoHeight;
     if (!vw || !vh) return null;
     // The preview is object-fit: cover inside a square, so what the user can
@@ -621,7 +622,17 @@
     if (n < 8) return null;
     canvas.width = n; canvas.height = n;
     ctx.drawImage(video, sx, sy, side, side, 0, 0, n, n);
-    return jsQR(ctx.getImageData(0, 0, n, n).data, n, n, { inversionAttempts: 'dontInvert' });
+    return ctx.getImageData(0, 0, n, n);
+  }
+
+  // `blur` null decodes the crop as captured. 0 or 1 first runs it through
+  // QREnhance.binarize, which is what reads a grey, washed-out, dim or grainy
+  // code that the raw pass cannot (see web/qrenhance.js and bench/qr).
+  function decodeCrop(blur) {
+    var img = grabCrop();
+    if (!img) return null;
+    if (blur != null) QREnhance.binarize(img.data, img.width, img.height, blur, img.data);
+    return jsQR(img.data, img.width, img.height, { inversionAttempts: 'dontInvert' });
   }
 
   function decodeFull() {
@@ -678,21 +689,40 @@
     loop();
   }
 
+  // One pass per frame, rotating. Consecutive frames are a few ms apart and
+  // nearly identical, so a code any pass can read is read within a cycle.
+  //
+  // Without BarcodeDetector: the tight crop catches a distant code, and the
+  // cheap full frame (~6ms) catches one held off to the side of the reticle.
+  // The two binarized crops read the grey, washed-out and grainy codes that
+  // neither raw pass can. On bench/qr's held-out suite they take decodes from 43%
+  // to 76%, with no case lost that the raw crop used to read. The clean-up
+  // costs less than a raw jsQR pass (in Chrome on a laptop, ~7ms against
+  // ~11ms). On a grainy frame the pass as a whole can come out cheaper than
+  // the raw one, because jsQR stops chasing fake finder patterns in the grain.
+  //
+  // With BarcodeDetector: native detection reads the full frame and is cheap,
+  // so it keeps every other frame. The binarized crops go through jsQR on
+  // the frames between. A native detector is not something the benchmark can
+  // run, but the binarized image is clean black and white, and jsQR on it is
+  // the measured path.
+  var JSQR_PASSES   = ['crop', 'full', 'blur', 'sharp'];
+  var NATIVE_PASSES = ['native', 'blur', 'native', 'sharp'];
+
   async function tick(myRun) {
     if (halted || myRun !== runId) return;
     var raw = null;
     try {
-      if (detector) {
-        // Native detection reads the full frame and is cheap, so it gets the
-        // extra resolution for free — no cropping needed.
+      var passes = detector ? NATIVE_PASSES : JSQR_PASSES;
+      var which = passes[pass++ % passes.length];
+      if (which === 'native') {
         var found = await detector.detect(video);
         if (found.length) raw = found[0].rawValue;
       } else if (video.videoWidth) {
-        // Alternate windows: the tight crop catches a distant code, the cheap
-        // full frame (~6ms) still catches one held off to the side of the
-        // reticle and keeps the loop moving when a grainy low-light frame makes
-        // the crop pass expensive.
-        var res = (pass++ & 1) ? decodeFull() : decodeCrop();
+        var res = which === 'full'  ? decodeFull()
+                : which === 'blur'  ? decodeCrop(1)
+                : which === 'sharp' ? decodeCrop(0)
+                : decodeCrop(null);
         if (res) raw = res.data;
       }
     } catch (e) { /* transient decode failure — just try the next frame */ }

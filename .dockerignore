@@ -7,3 +7,4 @@ chrome_profile/
 .DS_Store
 README.md
 users.json
+bench/

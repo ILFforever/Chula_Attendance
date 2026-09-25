@@ -60,3 +60,6 @@ homework.json
 # Claude Code
 .claude/
 ideas.txt
+
+# QR benchmark deps (bench/qr)
+node_modules/

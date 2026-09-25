@@ -1,0 +1,13 @@
+{
+  "name": "qr-scan-bench",
+  "private": true,
+  "description": "Before/after benchmark for the web scanner's QR decode pipeline (web/scan.html).",
+  "scripts": {
+    "bench": "node bench.js"
+  },
+  "devDependencies": {
+    "jpeg-js": "^0.4.4",
+    "pngjs": "^7.0.0",
+    "qrcode": "^1.5.4"
+  }
+}
