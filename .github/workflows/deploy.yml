@@ -3,6 +3,13 @@ name: Deploy to Fly.io
 on:
   push:
     branches: [main]
+    # The landing page (docs/, served by GitHub Pages) and Markdown docs don't ship in the
+    # bot image, so pushes that only touch them skip the Fly deploy. A push that also
+    # changes code still deploys.
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'LICENSE'
 
 jobs:
   deploy:

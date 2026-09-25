@@ -4,6 +4,8 @@ A Discord bot for Chula students: it automatically checks you into **MyCourseVil
 
 **🌐 [ilfforever.github.io/Chula_Attendance](https://ilfforever.github.io/Chula_Attendance/)** — landing page, feature overview, and setup guide.
 
+<a href="https://ilfforever.github.io/Chula_Attendance/"><img src="docs/media/hero-poster.jpg" width="440" alt="The bot replying to an attendance link in Discord: 2110101 Comp Prog, 23/23 checked in — click to watch the 20-second walkthrough on the landing page"></a>
+
 ## Features
 
 - **Attendance check-in** — auto check-in the moment a link/QR is posted, for MyCourseVille and ClassDeeDee (opt out with `/autocheckin off` if you only want Homework Check)
