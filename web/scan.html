@@ -106,19 +106,32 @@
   #who.warn #whoNote { color: var(--err); }
 
   #controls {
-    display: flex; justify-content: center;
-    margin-top: 12px; min-height: 34px;
-    /* A wide zoom range can produce six stops; let the row scroll on a narrow
-       phone rather than clipping the outer ones. */
+    display: flex; flex-direction: column; align-items: center; gap: 10px;
+    margin-top: 12px;
+  }
+  #controls[hidden] { display: none; }
+  #stops {
+    display: flex; gap: 4px; max-width: 100%;
+    padding: 4px; border-radius: 999px;
+    background: var(--panel); border: 1px solid var(--line);
+    /* A wide zoom range can produce seven pills; let the row scroll on a
+       narrow phone rather than clipping the outer ones. */
     overflow-x: auto; -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
   }
-  #controls::-webkit-scrollbar { display: none; }
-  #controls[hidden] { display: none; }
-  #stops {
-    display: flex; gap: 4px; flex: 0 0 auto;
-    padding: 4px; border-radius: 999px;
-    background: var(--panel); border: 1px solid var(--line);
+  #stops::-webkit-scrollbar { display: none; }
+  #zoomRow {
+    display: flex; align-items: center; gap: 10px;
+    width: 100%; padding: 0 4px;
+  }
+  #zoomRow[hidden] { display: none; }
+  #zoomSlider {
+    flex: 1; min-width: 0; height: 28px; margin: 0;
+    accent-color: var(--accent);
+  }
+  #zoomVal {
+    min-width: 44px; text-align: right;
+    font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums;
   }
   #stops button {
     width: auto; margin: 0; padding: 7px 14px;
@@ -161,7 +174,11 @@
   </div>
 
   <div id="controls" hidden>
-    <div id="stops" role="group" aria-label="Zoom and lens"></div>
+    <div id="stops" role="group" aria-label="Zoom presets"></div>
+    <div id="zoomRow">
+      <input type="range" id="zoomSlider" min="0" max="1000" step="1" value="0" aria-label="Zoom">
+      <span id="zoomVal">1x</span>
+    </div>
   </div>
 
   <pre id="diag" hidden></pre>
@@ -212,6 +229,9 @@
 
   var controls = document.getElementById('controls');
   var stopsEl  = document.getElementById('stops');
+  var zoomRow  = document.getElementById('zoomRow');
+  var slider   = document.getElementById('zoomSlider');
+  var zoomVal  = document.getElementById('zoomVal');
   var diagEl   = document.getElementById('diag');
 
   var detector = null;
@@ -221,15 +241,18 @@
   var track    = null;       // live video track - zoom capabilities hang off this
   var lenses   = [];         // back-facing cameras worth offering as a choice
   var curDeviceId = null;    // the camera actually open, the source of truth
-  var stops    = [];         // the focal-length buttons: lenses, or zoom levels
-  var stopIdx  = 0;
   var switching = false;     // guards against a second tap mid-switch
   var blocked  = {};         // deviceIds that turned out to be unusable
-  var nativeZoom = false;    // does the track expose a real zoom capability?
-  var zoom     = 1;
+  var nativeZoom = false;    // does the open track expose a real zoom capability?
+  var zoom     = 1;          // its zoom, in the track's own units
   var zoomMin  = 1;
   var zoomMax  = 1;
   var zoomUnit = 1;          // 1 normally, 100 where zoom is a percentage
+  var capsSeen = {};         // deviceId -> {min, max, unit} native zoom, or null
+  var zoomX    = 1;          // the zoom asked for, where 1x is the main wide lens
+  var digital  = 1;          // crop factor on top of the open camera
+  var onTele   = false;      // the telephoto is open (it sits outside the slider)
+  var pendingX = null;       // a zoom that arrived mid-switch
   var pass     = 0;
   var runId    = 0;          // bumped on every teardown; stale ticks bail out
 
@@ -359,11 +382,13 @@
     if (!l) return null;
     if (/front|user facing|truedepth|selfie|desk view/.test(l)) return null;
     if (/dual|triple|virtual/.test(l)) return null;
-    if (/ultra/.test(l)) return { key: 'ultra', order: 0, label: '.5x' };
-    // No API reports focal length, and a telephoto is 2x on one iPhone and 5x
-    // on another — so name it rather than invent a number that will be wrong.
-    if (/telephoto|periscope|tele /.test(l)) return { key: 'tele', order: 2, label: 'Tele' };
-    if (/back|rear|environment|wide|camera/.test(l)) return { key: 'wide', order: 1, label: '1x' };
+    // `base` places the lens on the zoom scale. No API reports focal length,
+    // and a telephoto is 2x on one iPhone and 5x on another, so it gets no
+    // number. It is offered as its own button rather than as a stretch of the
+    // slider with a label that would be wrong on half the phones.
+    if (/ultra/.test(l)) return { key: 'ultra', order: 0, base: 0.5 };
+    if (/telephoto|periscope|tele /.test(l)) return { key: 'tele', order: 2, base: null };
+    if (/back|rear|environment|wide|camera/.test(l)) return { key: 'wide', order: 1, base: 1 };
     return null;
   }
 
@@ -372,8 +397,8 @@
     try {
       // Labels are blank until camera permission is granted, so this has to run
       // after openCamera. If they are blank anyway, every role comes back null
-      // and we fall through to zoom stops — which is the right outcome: an
-      // unlabelled list is not something to guess at.
+      // and we fall back to zooming the one camera that is open — which is the
+      // right outcome: an unlabelled list is not something to guess at.
       var devs = await navigator.mediaDevices.enumerateDevices();
       var seen = {};
       devs.forEach(function (d) {
@@ -406,6 +431,155 @@
     } else {
       zoomUnit = 1; zoomMin = 1; zoomMax = 1; zoom = 1;
     }
+    // Capabilities are only readable on the camera that is open, but the
+    // slider's range depends on the wide lens even while the ultra-wide is
+    // showing. Remember each camera's once it has been seen.
+    if (curDeviceId) {
+      capsSeen[curDeviceId] = nativeZoom ? { min: zoomMin, max: zoomMax, unit: zoomUnit } : null;
+    }
+  }
+
+  function lensBy(key) {
+    for (var i = 0; i < lenses.length; i++) if (lenses[i].role.key === key) return lenses[i];
+    return null;
+  }
+
+  // Safari often leaves deviceId out of getSettings(), and the first camera is
+  // opened by facingMode rather than by id, so fall back to matching the
+  // track's label against the enumerated lenses.
+  function matchCurrentLens() {
+    if (!track) return;
+    for (var i = 0; i < lenses.length; i++) if (lenses[i].deviceId === curDeviceId) return;
+    for (var j = 0; j < lenses.length; j++) {
+      if (lenses[j].label && lenses[j].label === track.label) { curDeviceId = lenses[j].deviceId; return; }
+    }
+  }
+
+  // One zoom scale across every lens with a known place on it, in the units a
+  // phone's own camera app uses: .5x is the ultra-wide, 1x the main lens.
+  //
+  // Beyond 1x the main lens zooms with the sensor's own zoom where the browser
+  // exposes it. That crops the full 12 or 48 MP sensor before the frame is
+  // scaled down to the 1080p stream, so up to a few x it adds real detail,
+  // which is what makes a distant code resolve. Past what the sensor offers,
+  // or where no zoom is exposed at all, it goes digital. That adds no detail,
+  // but it enlarges the preview for aiming and narrows the decode crop to
+  // match.
+  var PRESETS = [0.5, 1, 2, 3, 5, 10];
+  var MAX_X = 10;        // beyond this a hand-held phone cannot hold a code in frame
+  var MAX_DIGITAL = 4;   // at 4x the decode crop is ~170 source pixels wide
+
+  function zoomRange() {
+    var lo = 1, nativeHi = 1;
+    if (lenses.length > 1) {
+      var wide = lensBy('wide'), c = wide ? capsSeen[wide.deviceId] : null;
+      lo = lensBy('ultra') ? 0.5 : 1;
+      if (c) nativeHi = c.max / c.unit;
+    } else if (nativeZoom) {
+      lo = zoomMin / zoomUnit;
+      nativeHi = zoomMax / zoomUnit;
+    }
+    return { min: lo, max: Math.min(MAX_X, Math.max(nativeHi, MAX_DIGITAL)) };
+  }
+
+  // What zoom x takes: which camera, what native zoom on it, and how much
+  // digital on top.
+  function planFor(x) {
+    var lens = null, base = 1, c;
+    if (lenses.length > 1) {
+      var ultra = lensBy('ultra'), wide = lensBy('wide');
+      lens = (x < 1 - 1e-6 && ultra) ? ultra : (wide || ultra);
+    }
+    if (lens) {
+      base = lens.role.base;
+      c = capsSeen[lens.deviceId];         // undefined until that lens has been open
+    } else {
+      c = nativeZoom ? { min: zoomMin, max: zoomMax, unit: zoomUnit } : null;
+    }
+    var f = x / base;                      // magnification needed from this camera
+    var plan = { deviceId: lens ? lens.deviceId : curDeviceId, native: null, digital: Math.max(1, f) };
+    if (c) {
+      var n = Math.min(Math.max(f, c.min / c.unit), c.max / c.unit);
+      plan.native = n * c.unit;
+      plan.digital = Math.max(1, f / n);
+    }
+    plan.digital = Math.min(plan.digital, MAX_DIGITAL);
+    return plan;
+  }
+
+  function applyPlan(p) {
+    if (p.native != null && track && Math.abs(p.native - zoom) > 1e-3) {
+      zoom = p.native;
+      track.applyConstraints({ advanced: [{ zoom: p.native }] }).catch(function () {});
+    }
+    digital = p.digital;
+    video.style.transform = digital > 1.001 ? 'scale(' + digital + ')' : '';
+  }
+
+  // Dragging within one lens is live. Crossing onto another lens means
+  // reopening the camera, which takes most of a second and blanks the
+  // preview, so that waits for `commit` (the finger lifting, or a preset tap)
+  // instead of firing on every step of the drag.
+  async function setZoom(x, commit) {
+    var r = zoomRange();
+    zoomX = Math.min(r.max, Math.max(r.min, x));
+    var p = planFor(zoomX);
+    var elsewhere = onTele || (p.deviceId && p.deviceId !== curDeviceId);
+    if (!elsewhere) applyPlan(p);
+    renderZoom(true);
+    if (!elsewhere || !commit) return;
+    if (switching) { pendingX = zoomX; return; }
+    await switchCamera(p.deviceId);
+  }
+
+  async function pickTele() {
+    var tele = lensBy('tele');
+    if (!tele || onTele || switching) return;
+    await switchCamera(tele.deviceId);
+  }
+
+  async function switchCamera(deviceId) {
+    switching = true;
+    var prev = curDeviceId;
+    stopStream();
+
+    var failed = null;
+    try {
+      await openCamera(deviceId);
+      // Labels lie. If what opened is the selfie camera, drop it rather than
+      // leaving someone pointing the wrong way round with no clue why.
+      var facing = (track && track.getSettings) ? track.getSettings().facingMode : null;
+      if (facing === 'user') failed = 'front';
+    } catch (e) {
+      failed = 'open';
+    }
+
+    if (failed) {
+      // Remember it, or the rebuild below just offers the same bad camera again.
+      blocked[deviceId] = true;
+      say(failed === 'front'
+        ? 'That camera faces the wrong way — removed it.'
+        : 'That lens would not open — staying on the previous one.', 'error');
+      try {
+        await openCamera(prev);
+      } catch (e2) {
+        // Neither will open. Leave a way back rather than a dead viewport.
+        switching = false;
+        stop();
+        againBtn.hidden = false;
+        return;
+      }
+    }
+
+    await syncControls();
+    switching = false;
+    if (!halted) loop();
+    // A preset tapped or the slider released while this switch was running.
+    if (pendingX != null) {
+      var next = pendingX;
+      pendingX = null;
+      setZoom(next, true);
+    }
   }
 
   function stopLabel(f) {
@@ -415,83 +589,60 @@
     return (r < 1 ? String(r).replace('0.', '.') : String(r)) + 'x';
   }
 
-  function buildStops() {
-    stops = [];
-    if (lenses.length > 1) {
-      lenses.forEach(function (d) {
-        stops.push({ label: d.role.label, deviceId: d.deviceId, zoom: null, title: d.label });
-      });
-      return;
+  // The slider is logarithmic, so .5x to 1x gets the same travel as 1x to 2x,
+  // the way zoom feels, and it snaps to a preset within a few percent of one.
+  function sliderToX() {
+    var r = zoomRange();
+    var x = r.min * Math.pow(r.max / r.min, slider.value / 1000);
+    for (var i = 0; i < PRESETS.length; i++) {
+      if (Math.abs(Math.log(x / PRESETS[i])) < 0.04) return PRESETS[i];
     }
-    if (nativeZoom) {
-      // Absolute focal lengths the sensor can actually reach. On a logical
-      // multi-camera these are exactly the thresholds where the OS swaps the
-      // physical lens, so .5x lands on the ultra-wide and 5x on the periscope
-      // even though neither is enumerated as its own device.
-      var lo = zoomMin / zoomUnit, hi = zoomMax / zoomUnit;
-      [0.5, 1, 2, 3, 5, 10].forEach(function (f) {
-        if (f >= lo - 1e-6 && f <= hi + 1e-6) {
-          stops.push({ label: stopLabel(f), deviceId: null, zoom: f * zoomUnit,
-                       title: 'Zoom ' + stopLabel(f) });
-        }
-      });
-      // A narrow range (say 1.0-1.8) matches nothing on the ladder. Space a few
-      // stops across whatever range there is rather than showing one dead pill.
-      if (stops.length < 2) {
-        stops = [lo, (lo + hi) / 2, hi].map(function (f) {
-          return { label: stopLabel(f), deviceId: null, zoom: f * zoomUnit,
-                   title: 'Zoom ' + stopLabel(f) };
-        });
-      }
-      return;
-    }
-    // Nothing but pixels to work with. Still worth offering: it does not add
-    // detail, but it lets someone frame a distant code inside the reticle,
-    // and the decode window narrows to match.
-    [1, 2, 3].forEach(function (f) {
-      stops.push({ label: f + 'x', deviceId: null, zoom: f, title: 'Digital zoom ' + f + 'x' });
-    });
+    return x;
   }
 
-  // Derive the active stop from what is really open, never from a stored index.
-  function currentStop() {
-    for (var i = 0; i < stops.length; i++) {
-      if (stops[i].deviceId) {
-        if (stops[i].deviceId === curDeviceId) return i;
-      } else if (Math.abs(stops[i].zoom - zoom) < 0.01 * zoomUnit) {
-        return i;
-      }
-    }
-    return 0;
-  }
-
-  function renderStops() {
+  function renderControls() {
+    var r = zoomRange(), tele = lensBy('tele');
+    var slides = r.max / r.min > 1.05;
     stopsEl.innerHTML = '';
-    if (stops.length < 2) { controls.hidden = true; return; }
-    stops.forEach(function (s, i) {
-      var b = document.createElement('button');
-      b.type = 'button';
-      b.textContent = s.label;
-      b.title = s.title;
-      b.setAttribute('aria-pressed', i === stopIdx ? 'true' : 'false');
-      if (i === stopIdx) b.classList.add('on');
-      b.addEventListener('click', function () { pickStop(i); });
-      stopsEl.appendChild(b);
+    if (!slides && !tele) { controls.hidden = true; return; }
+    var fs = PRESETS.filter(function (f) { return f >= r.min - 1e-6 && f <= r.max + 1e-6; });
+    // An Android logical camera often bottoms out at .6x, which no preset
+    // hits. Give its widest view a pill of its own.
+    if (r.min < 1 && Math.abs(fs[0] - r.min) > 0.05) fs.unshift(Math.round(r.min * 10) / 10);
+    fs.forEach(function (f) {
+      addPill(stopLabel(f), 'Zoom ' + stopLabel(f), f, function () { setZoom(f, true); });
     });
+    if (tele) addPill('Tele', tele.label, null, pickTele);
+    zoomRow.hidden = !slides;
     controls.hidden = false;
+    renderZoom();
   }
 
-  function applyZoom() {
-    // `zoom` is in whatever units the track reports; `factor` is always a plain
-    // multiplier, which is what the CSS scale and the decode crop both want.
-    var factor = zoom / zoomUnit;
-    if (nativeZoom && track) {
-      // The sensor crop moves, so the decode window stays where it is.
-      track.applyConstraints({ advanced: [{ zoom: zoom }] }).catch(function () {});
-      video.style.transform = '';
-    } else {
-      video.style.transform = factor > 1 ? 'scale(' + factor + ')' : '';
+  function addPill(label, title, f, onTap) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = label;
+    b.title = title;
+    b.dataset.zoom = f == null ? 'tele' : String(f);
+    b.addEventListener('click', onTap);
+    stopsEl.appendChild(b);
+  }
+
+  // `aiming` while the requested zoom has moved off the telephoto but the
+  // switch has not happened yet: show where the finger is, not the lens.
+  function renderZoom(aiming) {
+    var tele = onTele && !aiming;
+    var r = zoomRange();
+    if (r.max > r.min) {
+      slider.value = Math.round(1000 * Math.log(zoomX / r.min) / Math.log(r.max / r.min));
     }
+    zoomVal.textContent = tele ? 'Tele' : stopLabel(zoomX);
+    Array.prototype.forEach.call(stopsEl.children, function (b) {
+      var on = b.dataset.zoom === 'tele' ? tele
+             : !tele && Math.abs(Number(b.dataset.zoom) - zoomX) < 0.05;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
   }
 
   // No console on a phone, and the token is scrubbed from the URL as soon as
@@ -514,68 +665,22 @@
 
   async function syncControls() {
     await refreshLenses();
+    matchCurrentLens();
     readZoomCaps();
-    buildStops();
-    stopIdx = currentStop();
-    renderStops();
-    applyZoom();
+    var tele = lensBy('tele');
+    onTele = !!(tele && curDeviceId === tele.deviceId);
+    var r = zoomRange();
+    zoomX = Math.min(r.max, Math.max(r.min, zoomX));
+    if (onTele) {
+      // The telephoto shows at its native framing. The slider takes over
+      // again, back on the main lenses, as soon as it is moved.
+      applyPlan({ native: nativeZoom ? zoomMin : null, digital: 1 });
+    } else {
+      var p = planFor(zoomX);
+      if (!p.deviceId || p.deviceId === curDeviceId) applyPlan(p);
+    }
+    renderControls();
     renderDiag();
-  }
-
-  async function pickStop(i) {
-    var s = stops[i];
-    if (!s || switching) return;
-
-    if (!s.deviceId) {
-      // A zoom level on the camera already open.
-      if (Math.abs(s.zoom - zoom) < 0.01 * zoomUnit) return;
-      zoom = s.zoom;
-      stopIdx = i;
-      renderStops();
-      applyZoom();
-      return;
-    }
-
-    // Compare against the camera that is actually open, not the rendered index.
-    if (s.deviceId === curDeviceId) return;
-
-    switching = true;
-    var prev = curDeviceId;
-    stopIdx = i;
-    renderStops();
-    stopStream();
-
-    var failed = null;
-    try {
-      await openCamera(s.deviceId);
-      // Labels lie. If what opened is the selfie camera, drop it rather than
-      // leaving someone pointing the wrong way round with no clue why.
-      var facing = (track && track.getSettings) ? track.getSettings().facingMode : null;
-      if (facing === 'user') failed = 'front';
-    } catch (e) {
-      failed = 'open';
-    }
-
-    if (failed) {
-      // Remember it, or the rebuild below just offers the same bad camera again.
-      blocked[s.deviceId] = true;
-      say(failed === 'front'
-        ? 'That camera faces the wrong way — removed it.'
-        : 'That lens would not open — staying on the previous one.', 'error');
-      try {
-        await openCamera(prev);
-      } catch (e2) {
-        // Neither will open. Leave a way back rather than a dead viewport.
-        switching = false;
-        stop();
-        againBtn.hidden = false;
-        return;
-      }
-    }
-
-    await syncControls();
-    switching = false;
-    if (!halted) loop();
   }
 
   // Opt-in readout of what the phone actually reported, reachable by opening
@@ -586,12 +691,17 @@
     var caps = (track && track.getCapabilities) ? (track.getCapabilities() || {}) : {};
     var out = ['cameras seen: ' + lenses.length];
     lenses.forEach(function (d) {
-      out.push((d.deviceId === curDeviceId ? '> ' : '  ') + (d.label || '(no label)'));
+      var c = capsSeen[d.deviceId];
+      out.push((d.deviceId === curDeviceId ? '> ' : '  ') + (d.label || '(no label)') +
+               (c ? '  zoom ' + c.min + '-' + c.max : c === null ? '  no zoom' : ''));
     });
-    out.push('zoom: ' + (nativeZoom
+    out.push('open track: ' + (track ? track.label : '-'));
+    out.push('zoom caps: ' + (nativeZoom
       ? caps.zoom.min + '-' + caps.zoom.max + ' step ' + caps.zoom.step
       : 'not supported, using digital'));
-    out.push('stops: ' + stops.map(function (s) { return s.label; }).join(' '));
+    var r = zoomRange();
+    out.push('range: ' + stopLabel(r.min) + '-' + stopLabel(r.max) + '  at ' +
+             (onTele ? 'tele' : stopLabel(zoomX)) + '  native ' + zoom + '  digital ' + digital.toFixed(2));
     var st = (track && track.getSettings) ? track.getSettings() : {};
     out.push('settings: ' + JSON.stringify(st).slice(0, 240));
     diagEl.textContent = out.join(String.fromCharCode(10));
@@ -614,7 +724,7 @@
     if (!vw || !vh) return null;
     // The preview is object-fit: cover inside a square, so what the user can
     // actually see is the largest centred square of the frame.
-    var side = Math.min(vw, vh) * RETICLE / (nativeZoom ? 1 : zoom / zoomUnit);
+    var side = Math.min(vw, vh) * RETICLE / digital;
     var sx = (vw - side) / 2, sy = (vh - side) / 2;
     // 640 is the knee: dropping to 512 saves ~40% of the decode cost but
     // starts losing codes that only just resolve at arm's length.
@@ -673,7 +783,15 @@
       return;
     }
     try {
-      await openCamera(null);
+      // "Scan another" reopens the lens that was in use, so the camera matches
+      // the zoom the controls still show. The first start takes the default.
+      try {
+        await openCamera(curDeviceId);
+      } catch (e0) {
+        if (!curDeviceId) throw e0;
+        curDeviceId = null;
+        await openCamera(null);
+      }
     } catch (e) {
       viewport.hidden = true;
       controls.hidden = true;
@@ -794,6 +912,9 @@
     viewport.classList.remove('hit');
     start();
   });
+
+  slider.addEventListener('input', function () { setZoom(sliderToX(), false); });
+  slider.addEventListener('change', function () { setZoom(sliderToX(), true); });
 
   armDebugToggle();
   showWho();
