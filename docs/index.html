@@ -10,7 +10,8 @@
 <meta property="og:image" content="https://ilfforever.github.io/Chula_Attendance/media/og.jpg">
 <meta property="og:url" content="https://ilfforever.github.io/Chula_Attendance/">
 <meta name="twitter:card" content="summary_large_image">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2222%22 fill=%22%23c31569%22/><text x=%2250%22 y=%2268%22 font-size=%2258%22 text-anchor=%22middle%22 fill=%22white%22 font-family=%22Georgia,serif%22>C</text></svg>">
+<link rel="icon" href="media/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="media/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -79,7 +80,7 @@
   }
   nav .row{display:flex; align-items:center; justify-content:space-between; padding-block:1rem; gap:1rem}
   .brand{display:flex; align-items:center; gap:.55rem; font-family:"Fraunces",serif; font-weight:600; font-size:1.05rem; text-decoration:none; color:var(--ink)}
-  .brand .dot{width:.55rem; height:.55rem; border-radius:50%; background:var(--pink); flex:none}
+  .brand .mark{width:1.5rem; height:1.5rem; flex:none; display:block}
   .navlinks{display:flex; align-items:center; gap:1.25rem; font-size:.9rem}
   .whats-new-link{
     display:flex; align-items:center; gap:.4rem;
@@ -361,7 +362,8 @@
   footer{border-top:1px solid var(--line); padding-block:2.5rem}
   footer .wrap{display:flex; flex-wrap:wrap; justify-content:space-between; gap:1.2rem; align-items:center}
   footer .left{display:flex; flex-direction:column; gap:.3rem}
-  footer .brand-line{font-family:"Fraunces",serif; font-weight:600}
+  footer .brand-line{font-family:"Fraunces",serif; font-weight:600; display:flex; align-items:center; gap:.5rem}
+  footer .brand-line img{width:1.25rem; height:1.25rem}
   footer .muted{color:var(--muted); font-size:.85rem}
   footer .links{display:flex; gap:1.4rem; font-size:.88rem}
   footer .links a{text-decoration:none; color:var(--ink-soft)}
@@ -376,7 +378,7 @@
 
 <nav>
   <div class="wrap row">
-    <a class="brand" href="#top"><span class="dot"></span>Chula Attendance</a>
+    <a class="brand" href="#top"><img class="mark" src="media/favicon.svg" alt="">Chula Attendance</a>
     <div class="navlinks">
       <span class="tag">v3.3.0</span>
       <a class="icon-link" href="https://github.com/ILFforever/Chula_Attendance" aria-label="GitHub repository" target="_blank" rel="noopener">
@@ -733,7 +735,7 @@
 <footer>
   <div class="wrap">
     <div class="left">
-      <span class="brand-line">Chula Attendance</span>
+      <span class="brand-line"><img src="media/favicon.svg" alt="">Chula Attendance</span>
       <span class="muted">Built by Tanabodhi Mukura (@ILFforever) · MIT License</span>
     </div>
     <div class="links">

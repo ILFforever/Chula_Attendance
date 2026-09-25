@@ -1,3 +1,5 @@
+<img src="docs/media/icon.svg" width="96" alt="Chula Attendance icon: a pink tile with a white disc, a check mark carved out of it to form a C">
+
 # Chula Attendance Bot (v3)
 
 A Discord bot for Chula students: it automatically checks you into **MyCourseVille** attendance links and **ClassDeeDee** attendance QR codes, and can DM you a daily summary of outstanding homework across both platforms.
