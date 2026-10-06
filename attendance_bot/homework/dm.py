@@ -528,7 +528,15 @@ async def _handle_restore_click(interaction: discord.Interaction, custom_id: str
 DEFAULT_HOMEWORK_HOUR = 8  # Bangkok-local, used when a user hasn't set one
 
 
-async def run_homework_check_for_user(bot: discord.Client, executor, uid: str) -> None:
+# How often the deadline cache is refreshed for anyone with the reminder on,
+# independent of the digest. The reminder tick only ever reads that cache, so
+# without this a user with the reminder on but the digest off had nothing to
+# be reminded about, ever. Every 6h keeps a new MyCourseVille/ClassDeeDee item
+# from going unnoticed for most of a day at the cost of 4 silent logins a day.
+DEADLINE_REFRESH_EVERY_HOURS = 6
+
+
+async def run_homework_check_for_user(bot: discord.Client, executor, uid: str, *, send_dm: bool = True) -> None:
     loop = bot.loop
     try:
         result = await loop.run_in_executor(executor, check_homework_for_user, uid)
@@ -536,7 +544,18 @@ async def run_homework_check_for_user(bot: discord.Client, executor, uid: str) -
         log.exception("Homework check crashed for %s", uid)
         return
     cache_deadlines(uid, result["groups"])
-    await send_homework_dm_for_user(bot, uid, result)
+    if send_dm:
+        await send_homework_dm_for_user(bot, uid, result)
+
+
+def _deadline_refresh_due(uid: str, hour: int) -> bool:
+    # Staggered by uid so the refreshes spread across the hours instead of
+    # every reminder user logging in on the same tick.
+    try:
+        offset = int(uid)
+    except ValueError:
+        offset = 0
+    return (hour + offset) % DEADLINE_REFRESH_EVERY_HOURS == 0
 
 
 async def run_homework_scheduler_tick(bot: discord.Client, executor) -> None:
@@ -555,20 +574,23 @@ async def run_homework_scheduler_tick(bot: discord.Client, executor) -> None:
     now = datetime.now(TZ_BANGKOK)
 
     due_uids = []
+    refresh_uids = []
     for uid, info in registered_users.items():
-        if not info.get("homework_check"):
-            continue
         target_hour = info.get("homework_check_hour", DEFAULT_HOMEWORK_HOUR)
-        if target_hour != now.hour:
-            continue
-        due_uids.append(uid)
+        if info.get("homework_check") and target_hour == now.hour:
+            due_uids.append(uid)
+        elif info.get("deadline_reminder_enabled") and _deadline_refresh_due(uid, now.hour):
+            refresh_uids.append(uid)
 
-    if not due_uids:
-        return
+    if due_uids:
+        log.info("Homework check: running for %d user(s) at hour=%d", len(due_uids), now.hour)
+        for uid in due_uids:
+            await run_homework_check_for_user(bot, executor, uid)
 
-    log.info("Homework check: running for %d user(s) at hour=%d", len(due_uids), now.hour)
-    for uid in due_uids:
-        await run_homework_check_for_user(bot, executor, uid)
+    if refresh_uids:
+        log.info("Deadline cache: refreshing for %d user(s) at hour=%d", len(refresh_uids), now.hour)
+        for uid in refresh_uids:
+            await run_homework_check_for_user(bot, executor, uid, send_dm=False)
 
 
 # ---------------------------------------------------------------------------
@@ -578,8 +600,9 @@ async def run_homework_scheduler_tick(bot: discord.Client, executor) -> None:
 # switch from the daily digest above, since this fires at whatever time of
 # day an item actually crosses the user's chosen window, not at their
 # digest hour. It reads only the deadline cache populated by
-# check.cache_deadlines (last refreshed on that user's most recent
-# daily/manual homework check) — it never logs into MCV/ClassDeeDee itself,
+# check.cache_deadlines (refreshed by the digest, /homeworkcheck, and the
+# silent every-6h refresh in run_homework_scheduler_tick for anyone with the
+# reminder on) — the tick itself never logs into MCV/ClassDeeDee,
 # so running it on every 30-min scheduler tick costs nothing beyond a dict
 # scan regardless of how many users have it on.
 #

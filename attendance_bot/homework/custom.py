@@ -40,7 +40,9 @@ from attendance_bot.config import (
     MAX_CUSTOM_DESC,
     add_custom_assignment,
     list_custom_assignments,
+    persist_homework,
     remove_custom_assignment,
+    update_homework_deadline,
 )
 from attendance_bot.mcv.attendance import TZ_BANGKOK
 from attendance_bot.mcv.cugetreg import fetch_course_name
@@ -233,9 +235,16 @@ async def create_assignment(uid: str, *, course: str, desc: str, due_date: str, 
         except Exception as exc:  # noqa: BLE001 - a missing name must never fail the add
             log.info("Course name lookup failed for %s: %s", course_code, exc)
 
-    add_custom_assignment(
+    item_id = add_custom_assignment(
         uid, desc=desc_text, course_code=course_code, course_name=course_name, due_dt=due_dt,
     )
+    # Cached now rather than on the next homework check: an assignment added
+    # for tonight would otherwise sit outside the reminder's view until
+    # tomorrow's refresh, by which time it's already past due.
+    update_homework_deadline(
+        uid, "custom", course_code, item_id, due_dt, title=desc_text, course_name=course_name,
+    )
+    persist_homework()
     log.info("User %s added a custom assignment for %s", uid, course_code)
     return {"course_code": course_code, "course_name": course_name, "desc": desc_text, "due_dt": due_dt}
 

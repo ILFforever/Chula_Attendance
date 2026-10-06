@@ -66,6 +66,21 @@ def _mcv_days_remaining(due_text: str) -> float | None:
     return n / (24.0 * 60.0)  # minute
 
 
+def _mcv_due_dt(due_text: str, days: float | None) -> datetime | None:
+    """Absolute due estimate for an MCV item, from its relative wording.
+
+    "today" is read as the end of today (Bangkok), not now + 0: the cache
+    drops anything already past due, so now + 0 made an item due today
+    expire before the next reminder tick could ever see it.
+    """
+    if days is None:
+        return None
+    if "today" in (due_text or "").lower():
+        end_of_day = datetime.now(TZ_BANGKOK).replace(hour=23, minute=59, second=0, microsecond=0)
+        return end_of_day.astimezone(timezone.utc)
+    return datetime.now(timezone.utc) + timedelta(days=days)
+
+
 def _parse_cdd_deadline(deadline: str | None) -> datetime | None:
     """ClassDeeDee's deadline as an absolute, UTC-aware datetime, or None if
     unparseable. Shared by _cdd_days_remaining and the deadline-reminder
@@ -152,7 +167,7 @@ def check_homework_for_user(uid: str) -> dict:
             # MCV gives no absolute deadline, only relative wording ("3 days")
             # captured at observation time — good enough for a reminder, not
             # for anything requiring precision (see module docstring).
-            due_dt = datetime.now(timezone.utc) + timedelta(days=days) if days is not None else None
+            due_dt = _mcv_due_dt(item["due"], days)
             raw_items.append({
                 "platform": "mcv",
                 "course_code": item["course_code"] or "?",
@@ -241,9 +256,10 @@ def check_homework_for_user(uid: str) -> dict:
 
 def cache_deadlines(uid: str, groups: list[dict]) -> None:
     """Persist each item's resolved due_dt to the deadline-reminder cache
-    (config.homework_deadlines) so the 15-min reminder tick can scan for
-    "due within 12h" without a fresh MCV/ClassDeeDee login. Called after
-    every daily/manual check — see homework/dm.py's run_homework_check_for_user.
+    (config.homework_deadlines) so the 30-min reminder tick can scan for
+    "due within the user's window" without a fresh MCV/ClassDeeDee login.
+    Called after every daily/manual check and every silent reminder refresh
+    — see homework/dm.py's run_homework_check_for_user.
     """
     changed = False
     for group in groups:

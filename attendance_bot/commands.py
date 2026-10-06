@@ -456,6 +456,9 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
                 "won't show up until it's inside that window._",
                 ephemeral=True,
             )
+            # Fill the deadline cache now instead of waiting for the next
+            # scheduled refresh — the reminder has nothing to go on until then.
+            await run_homework_check_for_user(bot, homework_executor, uid, send_dm=False)
         else:
             registered_users[uid]["deadline_reminder_enabled"] = False
             persist_users()

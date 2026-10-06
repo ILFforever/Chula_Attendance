@@ -301,6 +301,13 @@ def prune_homework_deadlines():
         persist_homework()
 
 
+# MyCourseVille only says "due in 3 days", so its due_dt is re-estimated as
+# now + N on every check and never matches the last one exactly. Treating that
+# drift as a reschedule re-sent the reminder after every refresh; a real
+# reschedule moves a deadline by more than the wording's own granularity.
+_DEADLINE_RESCHEDULE_TOLERANCE = {"mcv": timedelta(days=1)}
+
+
 def update_homework_deadline(
     uid: str, platform: str, course_code: str, item_key: str, due_dt: datetime,
     *, title: str = "", course_name: str = "", link: str = "",
@@ -313,7 +320,11 @@ def update_homework_deadline(
     key = homework_key(uid, platform, course_code, item_key)
     due_dt_iso = due_dt.isoformat()
     existing = homework_deadlines.get(key)
-    reminded = bool(existing and existing.get("due_dt") == due_dt_iso and existing.get("deadline_reminded"))
+    reminded = False
+    if existing and existing.get("deadline_reminded"):
+        old_due = _parse_iso(existing.get("due_dt", ""))
+        tolerance = _DEADLINE_RESCHEDULE_TOLERANCE.get(platform, timedelta(0))
+        reminded = old_due is not None and abs(due_dt - old_due) <= tolerance
     homework_deadlines[key] = {
         "due_dt": due_dt_iso,
         "deadline_reminded": reminded,
