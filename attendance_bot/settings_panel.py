@@ -45,6 +45,7 @@ from attendance_bot.homework.dm import (
     DEFAULT_DEADLINE_REMINDER_HOURS,
     MIN_DEADLINE_REMINDER_HOURS,
     MAX_DEADLINE_REMINDER_HOURS,
+    run_homework_check_for_user,
 )
 from attendance_bot.classdeedee.attendance import classdeedee_purpose_enabled
 from attendance_bot.homework.custom import (
@@ -567,7 +568,7 @@ class ConfirmDeleteAccountModal(ui.Modal, title="Delete your account"):
         await interaction.response.edit_message(view=deleted_view)
 
 
-async def handle_settings_interaction(interaction: discord.Interaction) -> None:
+async def handle_settings_interaction(interaction: discord.Interaction, homework_executor) -> None:
     """Route a "cfg:" component click. Registered as a raw listener so it
     keeps working across restarts (see module docstring).
     """
@@ -671,3 +672,8 @@ async def handle_settings_interaction(interaction: discord.Interaction) -> None:
     await interaction.response.edit_message(
         view=build_settings_view(interaction.user, _PAGE_FOR_KIND.get(kind, DEFAULT_PAGE))
     )
+
+    # Same as `/deadlinereminder on`: fill the deadline cache now rather than
+    # leaving the reminder with nothing to go on until the next refresh.
+    if kind == "drtoggle" and new_state:
+        await run_homework_check_for_user(interaction.client, homework_executor, uid, send_dm=False)

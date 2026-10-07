@@ -372,7 +372,7 @@ async def on_interaction(interaction: discord.Interaction):
     # needs to keep working even after a restart.
     await handle_homework_button(interaction)
     await handle_custom_assignment_button(interaction)
-    await handle_settings_interaction(interaction)
+    await handle_settings_interaction(interaction, homework_executor)
 
 
 @bot.event
