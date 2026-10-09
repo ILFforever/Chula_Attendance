@@ -45,7 +45,7 @@ from attendance_bot.homework.dm import (
     DEFAULT_DEADLINE_REMINDER_HOURS,
     MIN_DEADLINE_REMINDER_HOURS,
     MAX_DEADLINE_REMINDER_HOURS,
-    run_homework_check_for_user,
+    prime_deadline_cache,
 )
 from attendance_bot.classdeedee.attendance import classdeedee_purpose_enabled
 from attendance_bot.homework.custom import (
@@ -676,4 +676,4 @@ async def handle_settings_interaction(interaction: discord.Interaction, homework
     # Same as `/deadlinereminder on`: fill the deadline cache now rather than
     # leaving the reminder with nothing to go on until the next refresh.
     if kind == "drtoggle" and new_state:
-        await run_homework_check_for_user(interaction.client, homework_executor, uid, send_dm=False)
+        await prime_deadline_cache(interaction.client, homework_executor, uid)

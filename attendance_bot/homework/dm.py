@@ -548,6 +548,23 @@ async def run_homework_check_for_user(bot: discord.Client, executor, uid: str, *
         await send_homework_dm_for_user(bot, uid, result)
 
 
+# Turning the reminder on fills the cache straight away, but only once per
+# user per cooldown: each fill is a full MCV + ClassDeeDee login on the shared
+# homework pool, and flipping the /settings toggle on/off/on shouldn't queue
+# a login per click ahead of everyone's scheduled checks.
+PRIME_COOLDOWN = timedelta(minutes=10)
+_last_primed: dict[str, datetime] = {}
+
+
+async def prime_deadline_cache(bot: discord.Client, executor, uid: str) -> None:
+    now = datetime.now(timezone.utc)
+    last = _last_primed.get(uid)
+    if last is not None and now - last < PRIME_COOLDOWN:
+        return
+    _last_primed[uid] = now
+    await run_homework_check_for_user(bot, executor, uid, send_dm=False)
+
+
 def _deadline_refresh_due(uid: str, hour: int) -> bool:
     # Staggered by uid so the refreshes spread across the hours instead of
     # every reminder user logging in on the same tick.

@@ -24,6 +24,7 @@ from attendance_bot.config import (
 from attendance_bot.scanner.tokens import mint_scan_token
 from attendance_bot.homework.dm import (
     run_homework_check_for_user,
+    prime_deadline_cache,
     DEFAULT_HOMEWORK_HOUR,
     DEFAULT_DEADLINE_REMINDER_HOURS,
     MIN_DEADLINE_REMINDER_HOURS,
@@ -458,7 +459,7 @@ def setup(bot: discord.Client, tree: app_commands.CommandTree, attendance, execu
             )
             # Fill the deadline cache now instead of waiting for the next
             # scheduled refresh — the reminder has nothing to go on until then.
-            await run_homework_check_for_user(bot, homework_executor, uid, send_dm=False)
+            await prime_deadline_cache(bot, homework_executor, uid)
         else:
             registered_users[uid]["deadline_reminder_enabled"] = False
             persist_users()
