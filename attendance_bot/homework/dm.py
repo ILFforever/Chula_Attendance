@@ -57,6 +57,7 @@ from attendance_bot.config import (
 )
 from attendance_bot.mcv.attendance import TZ_BANGKOK
 from attendance_bot.homework.check import check_homework_for_user, filter_suppressed, cache_deadlines
+from attendance_bot.homework.custom import custom_items_for_user
 
 _PLATFORM_TAG = {"mcv": "MyCourseVille", "classdeedee": "ClassDeeDee", "custom": "Added by you"}
 
@@ -625,6 +626,10 @@ async def _send_deadline_reminder(bot: discord.Client, uid: str, entries: list[t
             "link": entry.get("link", ""),
             "item_key": item_key,
         })
+    # build_course_container colours each course by its most urgent item —
+    # the same "days" check.py sets on every digest group.
+    for group in by_course.values():
+        group["days"] = min(item["days"] for item in group["items"])
 
     view = ui.LayoutView(timeout=None)
     view.add_item(ui.TextDisplay("# Deadline approaching"))
@@ -638,6 +643,16 @@ async def _send_deadline_reminder(bot: discord.Client, uid: str, entries: list[t
         log.warning("Deadline reminder: could not DM %s: %s", uid, exc)
 
 
+def _cache_custom_deadlines(uid: str) -> None:
+    items = custom_items_for_user(uid)
+    if not items:
+        return
+    cache_deadlines(uid, [
+        {"course_code": item["course_code"], "course_name": item["course_name"], "items": [item]}
+        for item in items
+    ])
+
+
 async def run_deadline_reminder_tick(bot: discord.Client) -> None:
     """Called on every scheduler tick (see client.py). Pure cache lookup —
     see the module comment above for why this needs no platform login.
@@ -646,6 +661,14 @@ async def run_deadline_reminder_tick(bot: discord.Client) -> None:
     `/deadlinereminder on`, and measured against that user's own configured
     window (`/deadlinereminderhours`, default 12).
     """
+    # User-added items otherwise only reach the cache through a homework
+    # check, so someone with the reminder on but the daily digest off would
+    # never be reminded about their own /homeworkadd items. Unlike the
+    # platforms these need no login, so refreshing them every tick is free.
+    for uid, info in registered_users.items():
+        if info.get("deadline_reminder_enabled"):
+            _cache_custom_deadlines(uid)
+
     pending = pending_deadline_items()
     if not pending:
         return
@@ -671,7 +694,12 @@ async def run_deadline_reminder_tick(bot: discord.Client) -> None:
         return
 
     for uid, entries in by_uid.items():
-        await _send_deadline_reminder(bot, uid, entries)
+        # An exception escaping a tasks.loop stops the loop for good, so one
+        # bad send must not take every later reminder down with it.
+        try:
+            await _send_deadline_reminder(bot, uid, entries)
+        except Exception:
+            log.exception("Deadline reminder: send crashed for %s", uid)
         for key, _ in entries:
             mark_deadline_reminded(key)
 
