@@ -97,9 +97,17 @@ _HALF_HOURLY_BANGKOK_TIMES = [
 ]
 
 
+# Both loops catch everything: an exception escaping a tasks.loop stops it for
+# good (until the next restart). That is exactly how the homework digest died
+# silently on 2026-10-26 — one oversized DM raised, and no one got a digest
+# again until the bot was redeployed. A failed tick is logged; the next one
+# still runs.
 @tasks.loop(time=_HOURLY_BANGKOK_TIMES)
 async def homework_scheduler_loop():
-    await run_homework_scheduler_tick(bot, homework_executor)
+    try:
+        await run_homework_scheduler_tick(bot, homework_executor)
+    except Exception:
+        log.exception("Homework scheduler tick failed")
 
 
 @homework_scheduler_loop.before_loop
@@ -109,7 +117,10 @@ async def _before_homework_scheduler_loop():
 
 @tasks.loop(time=_HALF_HOURLY_BANGKOK_TIMES)
 async def deadline_reminder_loop():
-    await run_deadline_reminder_tick(bot)
+    try:
+        await run_deadline_reminder_tick(bot)
+    except Exception:
+        log.exception("Deadline reminder tick failed")
 
 
 @deadline_reminder_loop.before_loop
@@ -127,6 +138,35 @@ def _spawn(coro) -> asyncio.Task:
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
     return task
+
+
+def _restart_if_it_dies(loop: tasks.Loop, name: str) -> None:
+    """Second line of defence behind the try/except in each loop body: if a
+    loop still ends for any reason other than a normal shutdown, log it and
+    start it again, instead of staying dead until the next deploy.
+
+    after_loop runs while the loop's own task is still finishing, so the
+    restart is scheduled a little later rather than done inline (start()
+    refuses while the old task is still running). The 60s delay also keeps a
+    persistent failure from turning into a tight restart loop.
+    """
+    @loop.after_loop
+    async def _after():
+        if loop.is_being_cancelled():
+            return  # bot shutting down — let it stop
+        log.error("%s stopped unexpectedly — restarting it in 60s", name)
+
+        async def _restart_later():
+            await asyncio.sleep(60)
+            if not loop.is_running():
+                loop.start()
+                log.info("%s restarted", name)
+
+        _spawn(_restart_later())
+
+
+_restart_if_it_dies(homework_scheduler_loop, "Homework scheduler loop")
+_restart_if_it_dies(deadline_reminder_loop, "Deadline reminder loop")
 
 # Register all slash commands and get helpers back
 run_check_in_async, dm_results = commands.setup(bot, tree, attendance, executor, bot_start_time, homework_executor)

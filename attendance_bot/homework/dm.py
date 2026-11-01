@@ -221,6 +221,37 @@ def _append_controls(layout: ui.LayoutView, uid: str) -> None:
     ))
 
 
+# Discord's hard cap on components per Components V2 message (nested ones
+# count too). Blowing past it raises ValueError while the view is being built.
+_MAX_COMPONENTS = 40
+# Separator + ActionRow + its 3 buttons, as added by _append_controls.
+_CONTROLS_COMPONENTS = 5
+# A compact item is Section + 2 TextDisplay + Button = 4 components, plus 2 for
+# the course's Container and heading. 8 items = 34, leaving 6 for the worst-case
+# header (up to 5 lines + Separator) on the first message — so any chunk fits
+# in one message no matter where it lands. A course with more items than this
+# simply continues in the next message.
+_MAX_ITEMS_PER_MESSAGE = 8
+
+
+def _split_groups(groups: list[dict]) -> list[dict]:
+    """Split any course with more than _MAX_ITEMS_PER_MESSAGE items into
+    several same-course groups, so no single message can exceed Discord's
+    40-component cap. Order (most urgent first) is preserved.
+
+    This was the cause of the homework digest dying on 2026-10-26: one user
+    had a course with enough outstanding items that the message passed 40
+    components, the ValueError escaped the scheduler loop, and discord.py
+    stopped the loop for good — no digest for anyone until the next restart.
+    """
+    out = []
+    for group in groups:
+        items = group["items"]
+        for start in range(0, len(items), _MAX_ITEMS_PER_MESSAGE):
+            out.append({**group, "items": items[start:start + _MAX_ITEMS_PER_MESSAGE]})
+    return out
+
+
 def build_course_view(uid: str, group: dict, header_lines: list[str] | None = None) -> ui.LayoutView:
     """Build the full LayoutView for one course's message.
 
@@ -296,15 +327,25 @@ async def send_homework_dm_for_user(bot: discord.Client, uid: str, result: dict)
         log.info("Homework check: all-clear DM sent to %s", uid)
         return
 
-    for i, group in enumerate(groups):
+    chunks = _split_groups(groups)
+    for i, group in enumerate(chunks):
         layout = build_course_view(uid, group, header_lines if i == 0 else None)
-        if i == len(groups) - 1:
-            _append_controls(layout, uid)
-        try:
-            await user.send(view=layout)
-        except discord.HTTPException as exc:
-            log.warning("Homework check: could not DM %s: %s", uid, exc)
-            return  # further messages would fail the same way (DMs closed, user left, etc.)
+        messages = [layout]
+        if i == len(chunks) - 1:
+            # The controls row only rides along when it still fits under the
+            # 40-component cap; otherwise it goes out as its own message.
+            if layout.total_children_count + _CONTROLS_COMPONENTS <= _MAX_COMPONENTS:
+                _append_controls(layout, uid)
+            else:
+                controls = ui.LayoutView(timeout=None)
+                _append_controls(controls, uid)
+                messages.append(controls)
+        for message in messages:
+            try:
+                await user.send(view=message)
+            except discord.HTTPException as exc:
+                log.warning("Homework check: could not DM %s: %s", uid, exc)
+                return  # further messages would fail the same way (DMs closed, user left, etc.)
 
     log.info("Homework check DM sent to %s (%d course(s))", uid, len(groups))
 
@@ -531,13 +572,15 @@ DEFAULT_HOMEWORK_HOUR = 8  # Bangkok-local, used when a user hasn't set one
 
 async def run_homework_check_for_user(bot: discord.Client, executor, uid: str) -> None:
     loop = bot.loop
+    # Everything is inside the try, not just the login: this runs inside
+    # homework_scheduler_loop, and any exception escaping a tasks.loop stops
+    # it permanently — one user's bad data must not kill the digest for all.
     try:
         result = await loop.run_in_executor(executor, check_homework_for_user, uid)
+        cache_deadlines(uid, result["groups"])
+        await send_homework_dm_for_user(bot, uid, result)
     except Exception:
         log.exception("Homework check crashed for %s", uid)
-        return
-    cache_deadlines(uid, result["groups"])
-    await send_homework_dm_for_user(bot, uid, result)
 
 
 async def run_homework_scheduler_tick(bot: discord.Client, executor) -> None:
@@ -631,16 +674,26 @@ async def _send_deadline_reminder(bot: discord.Client, uid: str, entries: list[t
     for group in by_course.values():
         group["days"] = min(item["days"] for item in group["items"])
 
-    view = ui.LayoutView(timeout=None)
-    view.add_item(ui.TextDisplay("# Deadline approaching"))
-    view.add_item(ui.Separator())
-    for group in by_course.values():
-        view.add_item(build_course_container(uid, group))
+    # Pack courses into as few messages as fit under the 40-component cap —
+    # a single message for everyone used to overflow (ValueError) whenever
+    # many items entered the window at once, and the reminder was lost.
+    views = [ui.LayoutView(timeout=None)]
+    views[0].add_item(ui.TextDisplay("# Deadline approaching"))
+    views[0].add_item(ui.Separator())
+    for group in _split_groups(list(by_course.values())):
+        container = build_course_container(uid, group)
+        try:
+            views[-1].add_item(container)
+        except ValueError:
+            views.append(ui.LayoutView(timeout=None))
+            views[-1].add_item(container)
 
-    try:
-        await user.send(view=view)
-    except discord.HTTPException as exc:
-        log.warning("Deadline reminder: could not DM %s: %s", uid, exc)
+    for view in views:
+        try:
+            await user.send(view=view)
+        except discord.HTTPException as exc:
+            log.warning("Deadline reminder: could not DM %s: %s", uid, exc)
+            return
 
 
 def _cache_custom_deadlines(uid: str) -> None:
