@@ -38,6 +38,7 @@ Design (settled after mocking up alternatives — see docs/ discussion):
 from __future__ import annotations
 
 import hashlib
+import random
 import re
 from datetime import datetime, timedelta, timezone
 
@@ -60,6 +61,64 @@ from attendance_bot.homework.check import check_homework_for_user, filter_suppre
 from attendance_bot.homework.custom import custom_items_for_user
 
 _PLATFORM_TAG = {"mcv": "MyCourseVille", "classdeedee": "ClassDeeDee", "custom": "Added by you"}
+
+# One of these is picked at random and shown in small text under the
+# "All Caught Up" DM, so the daily all-clear doesn't read identically every day.
+_ALL_CLEAR_TOASTS = [
+    "🥂 A toast to you — nothing due, nothing pending.",
+    "🎉 Inbox zero, homework edition.",
+    "😎 Go touch some grass. You've earned it.",
+    "🧋 Treat yourself to a bubble tea today.",
+    "🛌 Guilt-free nap unlocked.",
+    "🏆 Future you says thanks.",
+    "🌴 Free time detected. Use it wisely (or don't).",
+    "🍜 Nothing due — go get some food.",
+    "✨ Your to-do list is as empty as the library on a Friday night.",
+    "📚 The homework fears you now.",
+    "☕ Coffee tastes better with nothing due.",
+    "🎧 Put on your favourite playlist. No deadlines in sight.",
+    "🧠 Big brain move: finishing everything early.",
+    "🌅 Enjoy the view — your schedule is clear.",
+    "🍰 Dessert first today. You've earned it.",
+    "🚀 Ahead of schedule and still accelerating.",
+    "🐱 Even the cat is impressed.",
+    "🌈 Clear skies, clear to-do list.",
+    "🎬 Movie night? Movie night.",
+    "🧘 Deep breath. Nothing is due.",
+    "🍕 Pizza party for one (or more). Nothing pending.",
+    "🏖️ Mentally at the beach. Physically all caught up.",
+    "💪 Absolute unit of productivity.",
+    "📵 Feel free to ignore your notifications today.",
+    "🌙 Sleep early tonight. Or don't. No deadlines either way.",
+    "🎯 Bullseye. Every assignment handled.",
+    "🦸 Not all heroes wear capes. Some just submit on time.",
+    "🍦 Ice cream break: approved.",
+    "🗓️ Your calendar has room to breathe today.",
+    "🥇 Gold medal in staying on top of things.",
+    "🍳 Cook something nice. You've got the time.",
+    "🏃 Go for a run — or a walk to the canteen. Both count.",
+    "📖 Read something just for fun today.",
+    "🎨 Free time for side projects unlocked.",
+    "🛍️ Siam Square trip? Nothing's stopping you.",
+    "🎤 Karaoke tonight? Your schedule says yes.",
+    "🍵 Sip slowly. There's no rush today.",
+    "🦉 Night owl or early bird — you're caught up either way.",
+    "🧩 All pieces in place.",
+    "🌻 Have a sunny, deadline-free day.",
+    "🐶 Good job. Very good job. Who's caught up? You are.",
+    "🎁 Today's gift: zero pending homework.",
+    "🧹 Clean sweep — nothing left over.",
+    "⛱️ Out of office (mentally). Nothing due.",
+    "📸 Screenshot this. It doesn't happen every day.",
+    "🫶 Be proud of yourself today.",
+    "🍫 Have a snack. A big one.",
+    "🕹️ Achievement unlocked: All Caught Up.",
+    "🌊 Ride the wave — you're on top of it.",
+    "🥳 Nothing due. Party responsibly.",
+    "🛋️ The couch is calling. Answer it.",
+    "⭐ Gold star for today.",
+    "🍉 Sweet like watermelon — your schedule's clear.",
+]
 
 
 def _item_custom_id(uid: str, item: dict, course_code: str) -> str:
@@ -318,6 +377,10 @@ async def send_homework_dm_for_user(bot: discord.Client, uid: str, result: dict)
         for line in header_lines:
             no_work_view.add_item(ui.TextDisplay(line))
         no_work_view.add_item(ui.TextDisplay(body))
+        # Only cheer when the all-clear is real — if a platform errored out,
+        # "nothing outstanding" may just mean "couldn't check".
+        if not has_errors:
+            no_work_view.add_item(ui.TextDisplay(f"-# {random.choice(_ALL_CLEAR_TOASTS)}"))
         _append_controls(no_work_view, uid)
         try:
             await user.send(view=no_work_view)
