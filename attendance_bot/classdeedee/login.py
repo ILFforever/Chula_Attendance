@@ -77,6 +77,14 @@ class LoginError(Exception):
     """Login failed for a non-credential reason."""
 
 
+class TotpRequiredError(LoginError):
+    """The account has ChulaSSO two-factor (TOTP) on, so a password alone can't log in."""
+
+
+class TooManyAttemptsError(LoginError):
+    """ChulaSSO is throttling logins for this account or IP."""
+
+
 # ---------------------------------------------------------------------------
 # Session
 # ---------------------------------------------------------------------------
@@ -128,6 +136,18 @@ def _sso_authenticate(session: http_requests.Session, username: str, password: s
     body = r.text[:300].replace("\n", " ")
     log.info("  → HTTP %d | %s", r.status_code, body)
 
+    try:
+        data = r.json()
+    except ValueError:
+        data = None
+    status = data.get("status") if isinstance(data, dict) else None
+
+    # Checked before the status code: the SPA tells a lockout apart from a bad
+    # password by this field alone, so a 401 carrying it is not wrong credentials.
+    if status == "too_many_attempts":
+        raise TooManyAttemptsError(
+            f"ChulaSSO is rate-limiting logins: {data.get('info') or body}"
+        )
     if r.status_code in (401, 403):
         raise WrongCredentialsError("ChulaSSO rejected the credentials")
     if r.status_code >= 400:
@@ -136,6 +156,14 @@ def _sso_authenticate(session: http_requests.Session, username: str, password: s
         if any(k in low for k in ("incorrect", "invalid", "password", "credential")):
             raise WrongCredentialsError(f"Login failed: {body}")
         raise LoginError(f"Auth endpoint returned HTTP {r.status_code}: {body}")
+
+    # A 200 with no session yet: the account has two-factor on and ChulaSSO
+    # wants a 6-digit code against challenge_token before it will grant.
+    if status == "totp_required":
+        raise TotpRequiredError(
+            "this ChulaSSO account has two-factor authentication on, "
+            "which automatic login can't complete"
+        )
 
     log.info("ChulaSSO authenticated. Session cookies: %s", list(session.cookies.keys()))
 

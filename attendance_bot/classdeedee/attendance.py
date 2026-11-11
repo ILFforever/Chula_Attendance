@@ -38,6 +38,8 @@ from attendance_bot.classdeedee.login import (
     REQUEST_TIMEOUT,
     WrongCredentialsError as CddWrongCredentialsError,
     LoginError as CddLoginError,
+    TotpRequiredError as CddTotpRequiredError,
+    TooManyAttemptsError as CddTooManyAttemptsError,
 )
 
 CDD_CHECKIN = f"{CDD}/api/attendants/checkin"
@@ -131,6 +133,12 @@ def check_in_one(
     except CddWrongCredentialsError:
         log.warning("%s — wrong credentials", name)
         return f"🔑 **[{name}]** — wrong username or password, use `/register` to update"
+    except CddTotpRequiredError:
+        log.warning("%s — ChulaSSO two-factor is on", name)
+        return f"🔐 **[{name}]** — ChulaSSO two-factor is on, so the bot can't log in"
+    except CddTooManyAttemptsError as exc:
+        log.warning("%s — rate-limited: %s", name, exc)
+        return f"⏳ **[{name}]** — ChulaSSO is rate-limiting logins, check in manually"
     except CddLoginError as exc:
         log.warning("%s — login failed: %s", name, exc)
         return f"🔒 **[{name}]** — ClassDeeDee login failed, try again"
