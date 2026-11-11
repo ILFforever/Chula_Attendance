@@ -224,9 +224,11 @@ def _cdd_redeem(session: http_requests.Session, ticket: str) -> None:
         timeout=REQUEST_TIMEOUT,
         allow_redirects=False,
     )
-    body = r.text[:300].replace("\n", " ")
-    log.info("  → HTTP %d | %s", r.status_code, body)
+    # Only the status on success: the body is the user's ClassDeeDee session token.
+    log.info("  → HTTP %d", r.status_code)
     if not r.ok:
+        body = r.text[:300].replace("\n", " ")
+        log.info("  → %s", body)
         info = ""
         try:
             info = r.json().get("info", "")
